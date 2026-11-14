@@ -94,6 +94,10 @@ struct ContentView: View {
             .font(.caption2)
             .buttonStyle(.bordered)
             .controlSize(.mini)
+            if !settings.isEditingLayout {
+                Button("布局") { settings.isEditingLayout = true }
+                    .font(.caption)
+            }
             Button("日志") { showingLog = true }
                 .font(.caption)
             Button("设置") { showingSettings = true }

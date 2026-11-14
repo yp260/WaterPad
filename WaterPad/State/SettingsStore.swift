@@ -14,6 +14,7 @@ final class SettingsStore: ObservableObject {
         static let tapSharpness = "waterpad.tapSharpness"
         static let rumbleEnabled = "waterpad.rumbleEnabled"
         static let rumbleIntensity = "waterpad.rumbleIntensity"
+        static let layout = "waterpad.layout"
     }
 
     private let defaults = UserDefaults.standard
@@ -29,6 +30,11 @@ final class SettingsStore: ObservableObject {
     @Published var tapSharpness: Double { didSet { defaults.set(tapSharpness, forKey: Key.tapSharpness) } }
     @Published var rumbleEnabled: Bool { didSet { defaults.set(rumbleEnabled, forKey: Key.rumbleEnabled) } }
     @Published var rumbleIntensity: Double { didSet { defaults.set(rumbleIntensity, forKey: Key.rumbleIntensity) } }
+
+    /// 手柄控件布局（位置与缩放），可编辑并持久化。
+    @Published var layout: PadLayout = .default
+    /// 是否处于布局编辑态。不持久化，仅本次会话内的临时状态。
+    @Published var isEditingLayout: Bool = false
 
     @Published private(set) var rebuildToken: Int = 0
 
@@ -49,6 +55,18 @@ final class SettingsStore: ObservableObject {
         tapSharpness = stored.object(forKey: Key.tapSharpness) as? Double ?? 0.45
         rumbleEnabled = stored.object(forKey: Key.rumbleEnabled) as? Bool ?? true
         rumbleIntensity = stored.object(forKey: Key.rumbleIntensity) as? Double ?? 0.70
+
+        if let data = stored.data(forKey: Key.layout),
+           let decoded = try? JSONDecoder().decode(PadLayout.self, from: data) {
+            layout = decoded
+        }
+    }
+
+    /// 把当前布局编码写入 UserDefaults。编辑完成时调用。
+    func persistLayout() {
+        if let data = try? JSONEncoder().encode(layout) {
+            defaults.set(data, forKey: Key.layout)
+        }
     }
 
     var profile: ControllerProfile { .withID(profileID) }

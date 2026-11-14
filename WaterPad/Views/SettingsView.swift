@@ -80,6 +80,17 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
 
+                Section("布局") {
+                    Button("编辑布局") {
+                        dismiss()
+                        settings.isEditingLayout = true
+                    }
+                    Button("重置为默认布局") {
+                        settings.layout = .default
+                        settings.persistLayout()
+                    }
+                }
+
                 Section {
                     Button("查看连接日志") { showingLog = true }
                 }

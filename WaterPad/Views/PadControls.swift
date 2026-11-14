@@ -5,13 +5,14 @@ struct JoystickView: View {
     let label: String
     let x: Double
     let y: Double
+    var scale: CGFloat = 1
     let onChange: (Double, Double) -> Void
     let onRelease: () -> Void
 
-    private let radius: CGFloat = 56
-    private let knobRadius: CGFloat = 22
     @State private var touching = false
 
+    private var radius: CGFloat { 56 * scale }
+    private var knobRadius: CGFloat { 22 * scale }
     private var travel: CGFloat { radius - knobRadius }
 
     var body: some View {
@@ -55,9 +56,11 @@ struct JoystickView: View {
                         onRelease()
                     }
             )
-            Text(label)
-                .font(.caption2)
-                .foregroundColor(.secondary)
+            if !label.isEmpty {
+                Text(label)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
         }
     }
 }
@@ -106,9 +109,10 @@ struct PadButtonView: View {
 struct DPadView: View {
     let dx: Int
     let dy: Int
+    var scale: CGFloat = 1
     let onChange: (Int, Int) -> Void
 
-    private let size: CGFloat = 38
+    private var size: CGFloat { 38 * scale }
 
     var body: some View {
         VStack(spacing: 2) {
@@ -128,7 +132,7 @@ struct DPadView: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(active ? Color.accentColor : Color(UIColor.secondarySystemBackground))
             Text(symbol)
-                .font(.system(size: 13))
+                .font(.system(size: 13 * scale))
                 .foregroundColor(active ? .white : .primary)
         }
         .frame(width: size, height: size)

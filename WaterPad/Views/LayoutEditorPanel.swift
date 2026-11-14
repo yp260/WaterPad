@@ -10,6 +10,7 @@ import SwiftUI
 struct LayoutEditorPanel: View {
     @Binding var layout: PadLayout
     @Binding var selected: ControlID?
+    @Binding var panelExpanded: Bool
     let onResetAll: () -> Void
     let onCancel: () -> Void
     let onDone: () -> Void
@@ -18,15 +19,29 @@ struct LayoutEditorPanel: View {
     var body: some View {
         VStack(spacing: 6) {
             header
-            picker
-            if let sel = selected {
-                positionRow(sel)
-                sizeRow(sel)
+            if panelExpanded {
+                picker
+                if let sel = selected {
+                    positionRow(sel)
+                    sizeRow(sel)
+                } else {
+                    Text("轻点屏幕上的控件，或在上面的名称条里选一个按钮")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .padding(.vertical, 2)
+                }
             } else {
-                Text("轻点屏幕上的控件，或在上面的名称条里选一个按钮")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .padding(.vertical, 2)
+                // 收起时留一条细边，显示当前选中项与数值，方便确认状态又不挡控件
+                if let sel = selected {
+                    Text("\(sel.displayName)　X \(Int((layout[sel].x * 100).rounded()))%　Y \(Int((layout[sel].y * 100).rounded()))%　大小 \(Int((layout[sel].scale * 100).rounded()))%")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text("面板已收起，轻点控件仍可拖动")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
         }
         .padding(10)
@@ -41,17 +56,28 @@ struct LayoutEditorPanel: View {
 
     private var header: some View {
         HStack(spacing: 10) {
+            Button {
+                panelExpanded.toggle()
+            } label: {
+                Image(systemName: panelExpanded ? "chevron.down" : "chevron.up")
+                    .font(.caption2)
+                    .frame(width: 18, height: 16)
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.secondary)
             Text(selected.map { "\($0.displayName)" } ?? "未选中控件")
                 .font(.caption.bold())
                 .lineLimit(1)
                 .frame(minWidth: 70, alignment: .leading)
             Spacer(minLength: 2)
-            Button("重置全部") { onResetAll(); onChange() }
-                .font(.caption)
-            Button("取消") { onCancel() }
-                .font(.caption)
-            Button("完成") { onDone() }
-                .font(.caption.bold())
+            if panelExpanded {
+                Button("重置全部") { onResetAll(); onChange() }
+                    .font(.caption)
+                Button("取消") { onCancel() }
+                    .font(.caption)
+                Button("完成") { onDone() }
+                    .font(.caption.bold())
+            }
         }
     }
 

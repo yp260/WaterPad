@@ -99,9 +99,9 @@ struct PadLayout: Codable {
         put(.back, 0.440, 0.13, 1)
         put(.guide, 0.500, 0.13, 1)
         put(.start, 0.560, 0.13, 1)
-        put(.leftStickClick, 0.440, 0.84, 1)
-        put(.rightStickClick, 0.500, 0.84, 1)
-        put(.capture, 0.560, 0.84, 1)
+        put(.leftStickClick, 0.440, 0.80, 1)
+        put(.rightStickClick, 0.500, 0.80, 1)
+        put(.capture, 0.560, 0.80, 1)
         // 右簇
         put(.rightShoulder, 0.815, 0.13, 1)
         put(.rightTriggerClick, 0.915, 0.13, 1)

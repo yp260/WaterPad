@@ -22,6 +22,8 @@ struct GamepadView: View {
     @State private var snapshot: PadLayout = .default
     /// 当前选中的控件（编辑态下决定底部面板调谁）。
     @State private var selected: ControlID? = nil
+    /// 编辑面板是否展开。收起后只剩一条细边，避免在 iPhone 横屏遮住下半屏控件。
+    @State private var panelExpanded = true
 
     private var profile: ControllerProfile { settings.profile }
     private var editing: Bool { settings.isEditingLayout }
@@ -55,6 +57,7 @@ struct GamepadView: View {
                     LayoutEditorPanel(
                         layout: $draft,
                         selected: $selected,
+                        panelExpanded: $panelExpanded,
                         onResetAll: { draft = .default },
                         onCancel: {
                             draft = snapshot

@@ -518,6 +518,8 @@ def main():
           "面板提供位置与大小的步进微调按钮")
     check("onCancel" in panel_src and "onResetAll" in panel_src,
           "面板提供取消与重置，避免误改无法回退")
+    check("panelExpanded" in panel_src and "chevron.up" in panel_src and "chevron.down" in panel_src,
+          "编辑面板可折叠收起，iPhone 横屏不再遮住下半屏控件")
 
     check("var displayName: String" in layout_src,
           "每个控件有中文名，选择器按名字索引")

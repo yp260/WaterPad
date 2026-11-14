@@ -39,6 +39,8 @@ targets:
         # 此结论来自并行项目 PocketTrackpad v0.0.2 的真机闪退修复。
         NSBluetoothAlwaysUsageDescription: "需要蓝牙权限，才能把虚拟手柄输入发送给主机"
         NSBluetoothPeripheralUsageDescription: "需要蓝牙权限，才能把虚拟手柄输入发送给主机"
+        # CMMotionManager 读取运动数据按惯例声明用途文案，避免未来系统版本弹窗缺失
+        NSMotionUsageDescription: "需要访问运动传感器，才能把陀螺仪与加速度数据发送给主机"
         ITSAppUsesNonExemptEncryption: false
         UIViewControllerBasedStatusBarAppearance: false
     settings:

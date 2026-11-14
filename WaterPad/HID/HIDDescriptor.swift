@@ -89,11 +89,20 @@ enum HIDSpec {
     static let inputReportID: UInt8 = 0x01
     /// 输出报告编号：主机下发的力反馈（大马达、小马达各一字节）
     static let outputReportID: UInt8 = 0x02
+    /// 运动报告编号：陀螺仪三轴角速度加加速度计三轴
+    static let motionReportID: UInt8 = 0x03
 
     /// 输入报告长度，不含报告编号。九个字段合计 72 位。
     static let inputReportLength = 9
     /// 输出报告长度，不含报告编号。
     static let outputReportLength = 2
+    /// 运动报告长度，不含报告编号。六轴各 16 位，合计 96 位。
+    static let motionReportLength = 12
+
+    /// 陀螺仪满量程：度/秒。CoreMotion 的弧度/秒会换算到这里。
+    static let gyroFullScale: Double = 2000
+    /// 加速度计满量程：G。
+    static let accelFullScale: Double = 16
 
     /// HID Information 特征值：bcdHID 1.11、国家码 0、可远程唤醒且正常可连接。
     static let hidInformation: Data = Data([0x11, 0x01, 0x00, 0x03])
@@ -102,13 +111,16 @@ enum HIDSpec {
     /// Report Reference 描述符：第一个字节为报告编号，第二个字节为报告类型。
     static let inputReportReference: Data = Data([0x01, 0x01])
     static let outputReportReference: Data = Data([0x02, 0x02])
+    static let motionReportReference: Data = Data([0x03, 0x01])
 
-    /// 标准游戏手柄报告描述符。
+    /// 标准游戏手柄加运动传感器报告描述符。
     ///
-    /// 字段顺序与 GamepadReport.makeBytes() 必须严格一致：
+    /// 按键报告（编号一）字段顺序与 GamepadReport.makeBytes() 必须严格一致：
     ///   字节 0 左摇杆 X，字节 1 左摇杆 Y，字节 2 右摇杆 X，字节 3 右摇杆 Y，
     ///   字节 4 左扳机，字节 5 右扳机，字节 6 按钮低位，字节 7 按钮高位，
     ///   字节 8 低四位为 Hat Switch（1 到 8，0 表示松开），高四位为常量填充。
+    /// 运动报告（编号三）字段顺序与 GamepadReport.makeMotionBytes() 一致：
+    ///   字节 0 到 5 陀螺仪 X/Y/Z，字节 6 到 11 加速度计 X/Y/Z，各轴 16 位小端有符号。
     /// GATT HID 规范要求 Report 特征值的数据不含报告编号，编号由 0x2908 描述符指定。
     static let reportDescriptor: [UInt8] = [
         // 用途页：通用桌面
@@ -165,6 +177,45 @@ enum HIDSpec {
         0x75, 0x04,
         0x95, 0x01,
         0x81, 0x01,
+
+        // 运动报告编号三：陀螺仪三轴角速度，满量程 ±2000 度/秒。
+        // 用法页 0x20（传感器）、Gyroscope 3D 0x076、角速度轴 0x0457 到 0x0459，
+        // 编号来自 Linux hid-sensor-ids.h 与 USB HID 用法表传感器页，是跨平台标准编号。
+        // 物理量程必须显式声明：HID 全局项会跨报告延续，不覆盖会沿用十字键的 0 到 315。
+        0x85, 0x03,
+        0x05, 0x20,
+        0x09, 0x76,
+        0xA1, 0x02,
+        0x0A, 0x57, 0x04,
+        0x0A, 0x58, 0x04,
+        0x0A, 0x59, 0x04,
+        0x16, 0x00, 0x80,
+        0x26, 0xFF, 0x7F,
+        0x36, 0x30, 0xF8,
+        0x46, 0xD0, 0x07,
+        0x55, 0x00,
+        0x65, 0x15,
+        0x75, 0x10,
+        0x95, 0x03,
+        0x81, 0x02,
+        0xC0,
+        // 加速度计三轴，满量程 ±16G
+        0x05, 0x20,
+        0x09, 0x73,
+        0xA1, 0x02,
+        0x0A, 0x53, 0x04,
+        0x0A, 0x54, 0x04,
+        0x0A, 0x55, 0x04,
+        0x16, 0x00, 0x80,
+        0x26, 0xFF, 0x7F,
+        0x36, 0xF0, 0xFF,
+        0x46, 0x10, 0x00,
+        0x55, 0x00,
+        0x65, 0x1A,
+        0x75, 0x10,
+        0x95, 0x03,
+        0x81, 0x02,
+        0xC0,
 
         // 输出报告编号二：厂商自定义两个八位力度字段
         0x85, 0x02,
@@ -249,7 +300,7 @@ enum HIDSpec {
         if result.negativeCollectionDepth {
             result.issues.append("出现多余的集合结束项")
         }
-        if Set(result.reportIDs) != Set([inputReportID, outputReportID]) {
+        if Set(result.reportIDs) != Set([inputReportID, outputReportID, motionReportID]) {
             result.issues.append("报告编号集合与预期不符：\(result.reportIDs)")
         }
         let expectedInputBits = inputReportLength * 8
@@ -259,6 +310,10 @@ enum HIDSpec {
         let expectedOutputBits = outputReportLength * 8
         if result.outputBitsByReport[outputReportID] != expectedOutputBits {
             result.issues.append("输出报告二为 \(result.outputBitsByReport[outputReportID] ?? 0) 位，预期 \(expectedOutputBits) 位")
+        }
+        let expectedMotionBits = motionReportLength * 8
+        if result.inputBitsByReport[motionReportID] != expectedMotionBits {
+            result.issues.append("运动报告三为 \(result.inputBitsByReport[motionReportID] ?? 0) 位，预期 \(expectedMotionBits) 位")
         }
         return result
     }

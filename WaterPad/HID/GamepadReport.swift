@@ -43,6 +43,28 @@ enum GamepadReport {
         return Data(bytes)
     }
 
+    /// 生成运动报告（编号三）。字段顺序与描述符严格一致：
+    /// 陀螺仪 X/Y/Z 后跟加速度计 X/Y/Z，各轴 16 位小端有符号。
+    /// 满量程由描述符声明：陀螺仪 ±2000 度/秒，加速度计 ±16G。
+    static func makeMotionBytes(
+        snapshot: GamepadSnapshot,
+        includeReportIDPrefix: Bool = false
+    ) -> Data {
+        var out: [UInt8] = []
+        out.append(contentsOf: int16LE(gyroAxis(snapshot.gyroX)))
+        out.append(contentsOf: int16LE(gyroAxis(snapshot.gyroY)))
+        out.append(contentsOf: int16LE(gyroAxis(snapshot.gyroZ)))
+        out.append(contentsOf: int16LE(accelAxis(snapshot.accelX)))
+        out.append(contentsOf: int16LE(accelAxis(snapshot.accelY)))
+        out.append(contentsOf: int16LE(accelAxis(snapshot.accelZ)))
+        precondition(out.count == HIDSpec.motionReportLength,
+                     "运动报告长度与描述符不一致")
+        if includeReportIDPrefix {
+            out.insert(HIDSpec.motionReportID, at: 0)
+        }
+        return Data(out)
+    }
+
     /// 解析主机通过输出报告下发的力反馈。返回大马达与小马达力度，各 0 到 255。
     /// 主机可能在数据前带一字节报告编号，这里一并兼容。
     static func parseRumble(_ data: Data) -> (low: UInt8, high: UInt8)? {
@@ -64,5 +86,24 @@ enum GamepadReport {
     private static func trigger(_ value: Double) -> UInt8 {
         let raw = min(1, max(0, value)) * 255
         return UInt8(clamping: Int(raw.rounded(.toNearestOrAwayFromZero)))
+    }
+
+    /// 把 ±2000 度/秒的角速度映射到 16 位有符号满量程。
+    private static func gyroAxis(_ dps: Double) -> Int16 {
+        let clipped = min(HIDSpec.gyroFullScale, max(-HIDSpec.gyroFullScale, dps))
+        let raw = clipped / HIDSpec.gyroFullScale * 32767
+        return Int16(clamping: Int(raw.rounded(.toNearestOrAwayFromZero)))
+    }
+
+    /// 把 ±16G 的加速度映射到 16 位有符号满量程。
+    private static func accelAxis(_ g: Double) -> Int16 {
+        let clipped = min(HIDSpec.accelFullScale, max(-HIDSpec.accelFullScale, g))
+        let raw = clipped / HIDSpec.accelFullScale * 32767
+        return Int16(clamping: Int(raw.rounded(.toNearestOrAwayFromZero)))
+    }
+
+    private static func int16LE(_ value: Int16) -> [UInt8] {
+        let bits = UInt16(bitPattern: value)
+        return [UInt8(bits & 0x00FF), UInt8(bits >> 8)]
     }
 }

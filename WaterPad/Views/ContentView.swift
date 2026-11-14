@@ -6,6 +6,7 @@ struct ContentView: View {
     @EnvironmentObject private var pad: PadState
     @EnvironmentObject private var peripheral: HIDPeripheralManager
     @EnvironmentObject private var haptics: HapticEngineController
+    @EnvironmentObject private var motion: MotionProvider
     @EnvironmentObject private var log: LogStore
     @Environment(\.scenePhase) private var scenePhase
 
@@ -24,6 +25,7 @@ struct ContentView: View {
         // 由用户点「开始广播」触发，异常时能停在界面上查看日志。
         .onAppear {
             log.add("界面就绪，点「开始广播」启动蓝牙外设")
+            motion.apply(enabled: settings.motionEnabled)
         }
         // 状态以 60 赫兹采样并生成输入报告；蓝牙层按设置中的频率发送。
         .onReceive(Timer.publish(every: 1.0 / 60, on: .main, in: .common).autoconnect()) { _ in
@@ -42,11 +44,15 @@ struct ContentView: View {
         .onChange(of: settings.includeReportIDPrefix) { _ in
             peripheral.applyPacketFormat()
         }
+        .onChange(of: settings.motionEnabled) { enabled in
+            motion.apply(enabled: enabled)
+        }
         .onChange(of: scenePhase) { phase in
             switch phase {
             case .active:
                 peripheral.resumeIfNeeded()
                 haptics.resumeIfNeeded()
+                motion.apply(enabled: settings.motionEnabled)
             case .background:
                 log.add("应用进入后台，蓝牙广播可能受限，建议保持前台常亮", level: .warn)
             default:
@@ -59,6 +65,7 @@ struct ContentView: View {
                 .environmentObject(log)
                 .environmentObject(haptics)
                 .environmentObject(peripheral)
+                .environmentObject(motion)
         }
         .sheet(isPresented: $showingLog) {
             LogView().environmentObject(log)

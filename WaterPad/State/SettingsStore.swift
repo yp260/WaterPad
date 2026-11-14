@@ -14,6 +14,7 @@ final class SettingsStore: ObservableObject {
         static let tapSharpness = "waterpad.tapSharpness"
         static let rumbleEnabled = "waterpad.rumbleEnabled"
         static let rumbleIntensity = "waterpad.rumbleIntensity"
+        static let motionEnabled = "waterpad.motionEnabled"
         static let layout = "waterpad.layout"
     }
 
@@ -30,6 +31,8 @@ final class SettingsStore: ObservableObject {
     @Published var tapSharpness: Double { didSet { defaults.set(tapSharpness, forKey: Key.tapSharpness) } }
     @Published var rumbleEnabled: Bool { didSet { defaults.set(rumbleEnabled, forKey: Key.rumbleEnabled) } }
     @Published var rumbleIntensity: Double { didSet { defaults.set(rumbleIntensity, forKey: Key.rumbleIntensity) } }
+    /// 陀螺仪与加速度采集开关。只影响采集与发送内容，不改变 GATT 结构，无需重建服务。
+    @Published var motionEnabled: Bool { didSet { defaults.set(motionEnabled, forKey: Key.motionEnabled) } }
 
     /// 手柄控件布局（位置与缩放），可编辑并持久化。
     @Published var layout: PadLayout = .default
@@ -55,6 +58,7 @@ final class SettingsStore: ObservableObject {
         tapSharpness = stored.object(forKey: Key.tapSharpness) as? Double ?? 0.45
         rumbleEnabled = stored.object(forKey: Key.rumbleEnabled) as? Bool ?? true
         rumbleIntensity = stored.object(forKey: Key.rumbleIntensity) as? Double ?? 0.70
+        motionEnabled = stored.object(forKey: Key.motionEnabled) as? Bool ?? true
 
         if let data = stored.data(forKey: Key.layout),
            let decoded = try? JSONDecoder().decode(PadLayout.self, from: data) {

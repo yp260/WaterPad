@@ -12,6 +12,15 @@ struct GamepadSnapshot: Equatable {
     var pressed: Set<PadButton> = []
     var hat: HatDirection = .released
 
+    /// 运动传感器数据。陀螺仪单位为度/秒，加速度计单位为 G。
+    /// 关闭运动采集时保持为零，此时快照与中性状态相等。
+    var gyroX: Double = 0
+    var gyroY: Double = 0
+    var gyroZ: Double = 0
+    var accelX: Double = 0
+    var accelY: Double = 0
+    var accelZ: Double = 0
+
     static let neutral = GamepadSnapshot()
 }
 
@@ -50,6 +59,23 @@ final class PadState: ObservableObject {
 
     func setDpad(dx: Int, dy: Int) {
         snapshot.hat = HatDirection.from(dx: dx, dy: dy)
+    }
+
+    /// CoreMotion 在主线程按固定节奏回调，写入陀螺仪（度/秒）与加速度（G）。
+    func setMotion(gyroX: Double, gyroY: Double, gyroZ: Double,
+                   accelX: Double, accelY: Double, accelZ: Double) {
+        snapshot.gyroX = gyroX
+        snapshot.gyroY = gyroY
+        snapshot.gyroZ = gyroZ
+        snapshot.accelX = accelX
+        snapshot.accelY = accelY
+        snapshot.accelZ = accelZ
+    }
+
+    /// 清零运动数据。关闭运动采集时调用，让快照回到中性状态，
+    /// 主机侧也能立刻观察到静止读数而不是停在旧值上。
+    func resetMotion() {
+        setMotion(gyroX: 0, gyroY: 0, gyroZ: 0, accelX: 0, accelY: 0, accelZ: 0)
     }
 
     func reset() {

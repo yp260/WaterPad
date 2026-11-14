@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var haptics: HapticEngineController
     @EnvironmentObject private var peripheral: HIDPeripheralManager
+    @EnvironmentObject private var motion: MotionProvider
     @EnvironmentObject private var log: LogStore
     @Environment(\.dismiss) private var dismiss
 
@@ -76,6 +77,15 @@ struct SettingsView: View {
 
                 Section("已知边界") {
                     Text("主机得到的是通用 HID 游戏手柄，不是 XInput 的 Xbox 设备，也不会通过 PS4、Switch 或 Xbox 主机的认证握手。iPadOS 能否接管「手柄」这一 HID 类别尚未真机验证；同一条蓝牙链路上「鼠标」类别已在 iPad 上配对成功，请以本机实测为准。GATT 服务用完整 128 位编号、广播用 16 位编号属于利用系统检查口径差异，系统更新可能封掉此路径，上架审核亦有风险。应用必须保持前台，退到后台或锁屏后广播会受限。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Section("运动传感器") {
+                    row(title: "传感器", value: motion.availabilityText)
+                    row(title: "采集状态", value: motion.isActive ? "进行中" : "已停止")
+                    Toggle("发送陀螺仪与加速度", isOn: $settings.motionEnabled)
+                    Text("按 HID 传感器用法页报告陀螺仪三轴角速度（±2000 度/秒）与加速度计三轴（±16G），随独立的运动报告特征发送。主机不订阅该特征时零开销；Windows 与安卓把数据交给游戏的程度取决于游戏本身，多数游戏不会读取通用 HID 手柄的运动数据。")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

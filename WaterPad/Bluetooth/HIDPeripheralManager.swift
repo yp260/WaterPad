@@ -35,10 +35,13 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     private var completedAddCount = 0
 
     /// 用数组加对象身份判断，避免依赖 CBCentral 的哈希实现。
+    /// 按键报告与运动报告是两个独立特征，主机可能只订阅其中一个。
     private var subscribedCentrals: [CBCentral] = []
+    private var motionCentrals: [CBCentral] = []
 
     private let reportLock = NSLock()
     private var latestReport: Data?
+    private var latestMotionReport: Data?
     private var sendTimer: DispatchSourceTimer?
     private var droppedReportCount = 0
     private var lastDroppedLogTime: Date = .distantPast
@@ -82,9 +85,11 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             self.manager = nil
             self.serviceSet = nil
             self.subscribedCentrals.removeAll()
+            self.motionCentrals.removeAll()
             self.suspendedByHost = false
             self.reportLock.lock()
             self.latestReport = nil
+            self.latestMotionReport = nil
             self.reportLock.unlock()
             DispatchQueue.main.async {
                 self.isAdvertising = false
@@ -137,14 +142,20 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     }
 
     /// 由界面在主线程按固定节奏调用，生成输入报告后交给蓝牙队列发送。
+    /// 运动报告由同一份快照打包，字段顺序与描述符报告三一致。
     func submit(snapshot: GamepadSnapshot, profile: ControllerProfile, includeReportIDPrefix: Bool) {
         let data = GamepadReport.makeBytes(
             snapshot: snapshot,
             profile: profile,
             includeReportIDPrefix: includeReportIDPrefix
         )
+        let motionData = GamepadReport.makeMotionBytes(
+            snapshot: snapshot,
+            includeReportIDPrefix: includeReportIDPrefix
+        )
         reportLock.lock()
         latestReport = data
+        latestMotionReport = motionData
         reportLock.unlock()
     }
 
@@ -159,6 +170,7 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         manager?.stopAdvertising()
         manager?.removeAllServices()
         subscribedCentrals.removeAll()
+        motionCentrals.removeAll()
         suspendedByHost = false
         DispatchQueue.main.async {
             self.isAdvertising = false
@@ -232,27 +244,37 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
 
     private func sendLatestReport() {
         guard let set = serviceSet,
-              !subscribedCentrals.isEmpty,
               !suspendedByHost,
               let manager else { return }
 
         reportLock.lock()
         let data = latestReport
+        let motionData = latestMotionReport
         reportLock.unlock()
-        guard let data else { return }
 
-        let sent = manager.updateValue(
-            data,
-            for: set.inputReportCharacteristic,
-            onSubscribedCentrals: subscribedCentrals
-        )
-        if !sent {
-            droppedReportCount += 1
-            let now = Date()
-            if now.timeIntervalSince(lastDroppedLogTime) > 3 {
-                lastDroppedLogTime = now
-                log.add("发送队列已满，累计丢弃 \(droppedReportCount) 帧，可下调发送频率", level: .warn)
+        // 两个报告走不同特征、不同订阅列表；主机没订阅运动特征时不发。
+        if let data, !subscribedCentrals.isEmpty {
+            let sent = manager.updateValue(
+                data,
+                for: set.inputReportCharacteristic,
+                onSubscribedCentrals: subscribedCentrals
+            )
+            if !sent {
+                droppedReportCount += 1
+                let now = Date()
+                if now.timeIntervalSince(lastDroppedLogTime) > 3 {
+                    lastDroppedLogTime = now
+                    log.add("发送队列已满，累计丢弃 \(droppedReportCount) 帧，可下调发送频率", level: .warn)
+                }
             }
+        }
+        if let motionData, !motionCentrals.isEmpty {
+            // 运动报告满量程 ±2000 度/秒、±16G；主机不订阅则零开销。
+            _ = manager.updateValue(
+                motionData,
+                for: set.motionReportCharacteristic,
+                onSubscribedCentrals: motionCentrals
+            )
         }
     }
 
@@ -356,24 +378,51 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     func peripheralManager(_ peripheral: CBPeripheralManager,
                            central: CBCentral,
                            didSubscribeTo characteristic: CBCharacteristic) {
-        guard let set = serviceSet, set.isInputReport(characteristic) else { return }
-        if !subscribedCentrals.contains(where: { $0 === central }) {
-            subscribedCentrals.append(central)
+        guard let set = serviceSet else { return }
+        if characteristic === set.inputReportCharacteristic {
+            if !subscribedCentrals.contains(where: { $0 === central }) {
+                subscribedCentrals.append(central)
+            }
+            log.add("主机订阅输入报告，当前连接数 \(connectedTotal)")
+        } else if characteristic === set.motionReportCharacteristic {
+            if !motionCentrals.contains(where: { $0 === central }) {
+                motionCentrals.append(central)
+            }
+            log.add("主机订阅运动报告（陀螺仪与加速度），当前连接数 \(connectedTotal)")
+        } else {
+            return
         }
-        let count = subscribedCentrals.count
-        DispatchQueue.main.async { self.connectedCount = count }
-        log.add("主机订阅输入报告，当前连接数 \(count)")
+        publishConnectedCount()
         sendLatestReport()
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager,
                            central: CBCentral,
                            didUnsubscribeFrom characteristic: CBCharacteristic) {
-        guard let set = serviceSet, set.isInputReport(characteristic) else { return }
-        subscribedCentrals.removeAll { $0 === central }
-        let count = subscribedCentrals.count
+        guard let set = serviceSet else { return }
+        if characteristic === set.inputReportCharacteristic {
+            subscribedCentrals.removeAll { $0 === central }
+        } else if characteristic === set.motionReportCharacteristic {
+            motionCentrals.removeAll { $0 === central }
+        } else {
+            return
+        }
+        log.add("主机取消订阅，当前连接数 \(connectedTotal)")
+        publishConnectedCount()
+    }
+
+    /// 两个报告特征独立订阅，界面显示的连接数取两者并集。
+    private var connectedTotal: Int {
+        var seen: [CBCentral] = []
+        for central in subscribedCentrals + motionCentrals {
+            if !seen.contains(where: { $0 === central }) { seen.append(central) }
+        }
+        return seen.count
+    }
+
+    private func publishConnectedCount() {
+        let count = connectedTotal
         DispatchQueue.main.async { self.connectedCount = count }
-        log.add("主机取消订阅，当前连接数 \(count)")
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager,
@@ -391,6 +440,14 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             value = cached ?? GamepadReport.makeBytes(
                 snapshot: .neutral,
                 profile: currentProfile,
+                includeReportIDPrefix: currentIncludeReportIDPrefix
+            )
+        } else if request.characteristic === set.motionReportCharacteristic {
+            reportLock.lock()
+            let cached = latestMotionReport
+            reportLock.unlock()
+            value = cached ?? GamepadReport.makeMotionBytes(
+                snapshot: .neutral,
                 includeReportIDPrefix: currentIncludeReportIDPrefix
             )
         } else {

@@ -9,6 +9,7 @@ struct HIDServiceSet {
 
     let inputReportCharacteristic: CBMutableCharacteristic
     let outputReportCharacteristic: CBMutableCharacteristic
+    let motionReportCharacteristic: CBMutableCharacteristic
     let protocolModeCharacteristic: CBMutableCharacteristic
     let hidControlPointCharacteristic: CBMutableCharacteristic
 
@@ -22,6 +23,7 @@ struct HIDServiceSet {
 
     func readValue(for characteristic: CBCharacteristic) -> Data? {
         if characteristic === inputReportCharacteristic { return nil }
+        if characteristic === motionReportCharacteristic { return nil }
         if characteristic === outputReportCharacteristic { return Data([0x00, 0x00]) }
         guard let code = SIGUUID.shortCode(characteristic.uuid) else { return nil }
         return staticReadValues[code]
@@ -90,8 +92,21 @@ enum HIDServiceBuilder {
                                 value: HIDSpec.outputReportReference)
         ]
 
+        // 运动报告特征：陀螺仪三轴加加速度计三轴。主机不认识也能正常用手柄，
+        // 该特征只在主机主动订阅后才开始发送。
+        let motionReport = characteristic(
+            SIGUUID.hidReport,
+            properties: [.read, .notify],
+            permissions: [.readable, .readEncryptionRequired]
+        )
+        motionReport.descriptors = [
+            CBMutableDescriptor(type: SIGUUID.full(SIGUUID.reportReference),
+                                value: HIDSpec.motionReportReference)
+        ]
+
         hidService.characteristics = [
-            hidInformation, reportMap, protocolMode, controlPoint, inputReport, outputReport
+            hidInformation, reportMap, protocolMode, controlPoint,
+            inputReport, motionReport, outputReport
         ]
 
         // MARK: 设备信息服务
@@ -128,6 +143,7 @@ enum HIDServiceBuilder {
             batteryService: batteryService,
             inputReportCharacteristic: inputReport,
             outputReportCharacteristic: outputReport,
+            motionReportCharacteristic: motionReport,
             protocolModeCharacteristic: protocolMode,
             hidControlPointCharacteristic: controlPoint,
             allServices: [hidService, deviceInformationService, batteryService],

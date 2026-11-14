@@ -173,6 +173,35 @@ def make_report(snapshot, button_bits, prefix=False):
     return bytes_out
 
 
+def motion_axis(value, full_scale):
+    """与 Swift gyroAxis/accelAxis 一致：限幅后乘 32767，远离零舍入。"""
+    clipped = min(full_scale, max(-full_scale, value))
+    raw = clipped / full_scale * 32767
+    sign = -1 if raw < 0 else 1
+    rounded = sign * math.floor(abs(raw) + 0.5)
+    return max(-32768, min(32767, rounded))
+
+
+def make_motion_report(snapshot, prefix=False):
+    full = 2000.0
+    values = [
+        motion_axis(snapshot.get("gyroX", 0), full),
+        motion_axis(snapshot.get("gyroY", 0), full),
+        motion_axis(snapshot.get("gyroZ", 0), full),
+        motion_axis(snapshot.get("accelX", 0), 16.0),
+        motion_axis(snapshot.get("accelY", 0), 16.0),
+        motion_axis(snapshot.get("accelZ", 0), 16.0),
+    ]
+    bytes_out = []
+    for value in values:
+        bits = value & 0xFFFF
+        bytes_out.append(bits & 0xFF)
+        bytes_out.append(bits >> 8)
+    if prefix:
+        bytes_out.insert(0, 3)
+    return bytes_out
+
+
 def hexs(data):
     return " ".join(f"{byte:02X}" for byte in data)
 
@@ -193,21 +222,26 @@ def main():
     info = analyze(items)
     check(info["depth"] == 0, "应用集合闭合", f"结束深度 {info['depth']}")
     check(info["min_depth"] >= 0, "无多余集合结束项")
-    check(set(info["report_ids"]) == {1, 2}, "报告编号集合", str(sorted(info["report_ids"])))
+    check(set(info["report_ids"]) == {1, 2, 3}, "报告编号集合",
+          str(sorted(info["report_ids"])))
 
     input_len = extract_int(descriptor_src, "inputReportLength")
     output_len = extract_int(descriptor_src, "outputReportLength")
+    motion_len = extract_int(descriptor_src, "motionReportLength")
     input_id = extract_hex(descriptor_src, "inputReportID")
     output_id = extract_hex(descriptor_src, "outputReportID")
+    motion_id = extract_hex(descriptor_src, "motionReportID")
     check(input_len == 9, "输入报告常量为 9 字节", str(input_len))
     check(output_len == 2, "输出报告常量为 2 字节", str(output_len))
-    check((input_id, output_id) == (1, 2), "报告编号常量为 1 与 2")
+    check(motion_len == 12, "运动报告常量为 12 字节", str(motion_len))
+    check((input_id, output_id, motion_id) == (1, 2, 3), "报告编号常量为 1、2 与 3")
     check(info["input_bits"].get(1) == 72, "输入报告一为 72 位", f"{info['input_bits'].get(1)} 位")
+    check(info["input_bits"].get(3) == 96, "运动报告三为 96 位", f"{info['input_bits'].get(3)} 位")
     check(info["output_bits"].get(2) == 16, "输出报告二为 16 位", f"{info['output_bits'].get(2)} 位")
-    check(all(bits == 0 for key, bits in info["input_bits"].items() if key != 1),
-          "输入项没有落到错误报告编号")
-    check(all(bits == 0 for key, bits in info["output_bits"].items() if key != 2),
-          "输出项没有落到错误报告编号")
+    check(info["input_bits"] == {1: 72, 3: 96},
+          "输入项没有落到错误报告编号", str(info["input_bits"]))
+    check(info["output_bits"] == {2: 16},
+          "输出项没有落到错误报告编号", str(info["output_bits"]))
 
     # ---------- 2. 特征值常量 ----------
     print("\n[2/7] HID 与 GATT 常量")
@@ -220,10 +254,32 @@ def main():
           "输入 Report Reference 为编号 1、类型输入")
     check(extract_data_array(descriptor_src, "outputReportReference") == [0x02, 0x02],
           "输出 Report Reference 为编号 2、类型输出")
+    check(extract_data_array(descriptor_src, "motionReportReference") == [0x03, 0x01],
+          "运动 Report Reference 为编号 3、类型输入")
     check(extract_data_array(descriptor_src, "inputReportReference")[0] == input_id,
           "输入 Report Reference 编号与报告编号常量一致")
     check(extract_data_array(descriptor_src, "outputReportReference")[0] == output_id,
           "输出 Report Reference 编号与报告编号常量一致")
+    check(extract_data_array(descriptor_src, "motionReportReference")[0] == motion_id,
+          "运动 Report Reference 编号与报告编号常量一致")
+
+    # 运动报告描述符字节：传感器页标准用法（Linux hid-sensor-ids.h 同源编号）
+    # 加速度计 3D 0x073 / 陀螺仪 3D 0x076，轴用法 0x0453-0x0455 / 0x0457-0x0459。
+    # 物理量程必须显式声明：HID 全局项跨报告延续，不覆盖会沿用十字键的 0 到 315。
+    motion_needles = {
+        "陀螺仪 3D 用途页与用法": [0x05, 0x20, 0x09, 0x76],
+        "陀螺仪三轴角速度用法": [0x0A, 0x57, 0x04, 0x0A, 0x58, 0x04, 0x0A, 0x59, 0x04],
+        "陀螺仪物理量程 ±2000 度/秒": [0x36, 0x30, 0xF8, 0x46, 0xD0, 0x07],
+        "陀螺仪单位 度/秒": [0x55, 0x00, 0x65, 0x15],
+        "加速度计 3D 用途页与用法": [0x05, 0x20, 0x09, 0x73],
+        "加速度计三轴用法": [0x0A, 0x53, 0x04, 0x0A, 0x54, 0x04, 0x0A, 0x55, 0x04],
+        "加速度计物理量程 ±16G": [0x36, 0xF0, 0xFF, 0x46, 0x10, 0x00],
+        "加速度计单位 G": [0x55, 0x00, 0x65, 0x1A],
+    }
+    for label, needle in motion_needles.items():
+        found = any(descriptor[i:i + len(needle)] == needle
+                   for i in range(len(descriptor) - len(needle) + 1))
+        check(found, f"描述符含「{label}」")
 
     # ---------- 3. 字段顺序 ----------
     print("\n[3/7] 打包字段顺序与描述符对齐")
@@ -253,6 +309,27 @@ def main():
           "Hat Switch 高四位保持为零")
     check("raw.rounded(.toNearestOrAwayFromZero)" in report_src,
           "轴与扳机使用远离零舍入，与校验脚本一致")
+
+    motion_order = [
+        "int16LE(gyroAxis(snapshot.gyroX))",
+        "int16LE(gyroAxis(snapshot.gyroY))",
+        "int16LE(gyroAxis(snapshot.gyroZ))",
+        "int16LE(accelAxis(snapshot.accelX))",
+        "int16LE(accelAxis(snapshot.accelY))",
+        "int16LE(accelAxis(snapshot.accelZ))",
+    ]
+    actual_motion_order = []
+    for line in report_src.splitlines():
+        clean = strip_comments(line)
+        match = re.match(r"\s*out\.append\(contentsOf:\s*(.+)\)\s*$", clean)
+        if match:
+            actual_motion_order.append(match.group(1).strip())
+    check(actual_motion_order == motion_order,
+          "makeMotionBytes 的六轴字段顺序",
+          f"实际 {len(actual_motion_order)} 项"
+          + ("" if actual_motion_order == motion_order else f"：{actual_motion_order}"))
+    check("precondition(out.count == HIDSpec.motionReportLength" in report_src,
+          "运动报告打包有长度断言")
 
     # ---------- 4. 档位与按键位序 ----------
     print("\n[4/7] 手柄档位与按键位序")
@@ -301,6 +378,22 @@ def main():
     prefixed = make_report({"hat": 3}, generic, prefix=True) if generic else []
     check(prefixed[:1] == [0x01] and len(prefixed) == 10,
           "带编号前缀的报告", hexs(prefixed))
+
+    motion_cases = [
+        ("运动静止读数", {}, [0x00] * 12),
+        ("陀螺仪正满与加速度负满",
+         {"gyroX": 1000, "gyroY": -2000, "accelY": -16, "accelZ": 1},
+         [0x00, 0x40, 0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x01, 0x80, 0x00, 0x08]),
+        ("陀螺仪超量程被限幅", {"gyroX": 5000},
+         [0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+    ]
+    for label, snapshot, expected in motion_cases:
+        actual = make_motion_report(snapshot)
+        check(actual == expected, label, hexs(actual))
+
+    motion_prefixed = make_motion_report({"gyroX": 1000}, prefix=True)
+    check(motion_prefixed[:1] == [0x03] and len(motion_prefixed) == 13,
+          "带编号前缀的运动报告", hexs(motion_prefixed))
 
     # ---------- 6. PnP ID 与源码清单 ----------
     print("\n[6/7] 设备身份与源码清单")

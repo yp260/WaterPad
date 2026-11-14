@@ -136,13 +136,18 @@ struct LayoutEditorPanel: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 Spacer(minLength: 2)
-                stepButton("minus") { setScale(id, layout[id].scale - 0.05) }
-                stepButton("plus") { setScale(id, layout[id].scale + 0.05) }
-                Text("大小 ±5%")
+                stepButton("minus") { setScale(id, layout[id].scale - scaleStep(for: id)) }
+                stepButton("plus") { setScale(id, layout[id].scale + scaleStep(for: id)) }
+                Text("大小步进")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
         }
+    }
+
+    /// 大小步进幅度按当前缩放取比例，保证从 4.0 倍往下调也不会点几十次。
+    private func scaleStep(for id: ControlID) -> Double {
+        max(0.02, layout[id].scale * 0.1)
     }
 
     // MARK: - 大小
@@ -150,13 +155,13 @@ struct LayoutEditorPanel: View {
     private func sizeRow(_ id: ControlID) -> some View {
         HStack(spacing: 6) {
             Text("大小").font(.caption2).frame(width: 28, alignment: .leading)
-            Slider(value: binding(id, \.scale, 0.5...2.0)) { isEditing in
+            Slider(value: binding(id, \.scale, LayoutItem.scaleRange)) { isEditing in
                 if !isEditing { onChange() }
             }
             Text("\(Int((layout[id].scale * 100).rounded()))%")
                 .font(.caption2.monospacedDigit())
                 .foregroundColor(.secondary)
-                .frame(width: 34, alignment: .trailing)
+                .frame(width: 40, alignment: .trailing)
             Button("复位") { setScale(id, 1.0) }
                 .font(.caption2)
         }
@@ -191,7 +196,8 @@ struct LayoutEditorPanel: View {
     private func setScale(_ id: ControlID, _ scale: Double) {
         var copy = layout
         var item = copy[id]
-        item.scale = min(2.0, max(0.5, scale))
+        item.scale = min(LayoutItem.scaleRange.upperBound,
+                         max(LayoutItem.scaleRange.lowerBound, scale))
         copy[id] = item
         layout = copy
         onChange()

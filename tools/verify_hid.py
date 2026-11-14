@@ -547,6 +547,65 @@ def main():
     check("结束编辑" in content_src2 and "布局" in content_src2,
           "状态栏常驻布局入口，编辑态可一键结束")
 
+    # ---------- HID 控制点与链路回调（v0.0.8） ----------
+    control_point_src = read("Bluetooth/HIDPeripheralManager.swift")
+    builder_src2 = read("Bluetooth/HIDServiceBuilder.swift")
+
+    check(".writeWithoutResponse, .notify" in builder_src2,
+          "HID 控制点带 Notify 属性（用于回声响应，兼容会等响应的主机）")
+    for name, value in (("suspend", "0x00"), ("exitSuspend", "0x01")):
+        check(f"static let {name}: UInt8 = {value}" in descriptor_src,
+              f"控制点指令 {name} = {value}（蓝牙 SIG Assigned Numbers 口径）")
+    check("static let legacySuspend: UInt8 = 0x01" in descriptor_src
+          and "static let legacyExitSuspend: UInt8 = 0x02" in descriptor_src,
+          "兼容另一套流传口径的操作码常量")
+    check("sendControlPointResponse" in control_point_src
+          and "HIDControlPoint.suspend" in control_point_src,
+          "收到挂起指令后回送响应")
+    check("pendingControlPointResponse" in control_point_src,
+          "主机未订阅控制点通知时暂存响应，订阅后补发")
+    check("value == HIDControlPoint.suspend" in control_point_src,
+          "挂起判定用官方口径的 0x00（曾误按 0x01/0x02 另一套口径实现）")
+
+    for callback in ("didConnect central", "didDisconnectPeripheral", "didFailToConnect"):
+        check(callback in control_point_src,
+              f"实现了 {callback} 回调",
+              "" if callback in control_point_src else "缺失则无法区分没连上与连上没订阅")
+    check("connectedCentrals.count" in control_point_src,
+          "连接数按已建立链路的主机计算，不再用订阅数")
+    check("hostReadReportMap" in control_point_src and "hostControlPointText" in control_point_src
+          and "hostSubscribedInput" in control_point_src,
+          "提供主机连接诊断三项：报告描述符、控制点、输入报告订阅")
+    check("request.characteristic.properties.contains(.write)" in control_point_src,
+          "只对带响应的写逐条应答，Write Without Response 不应答")
+
+    check("enum HIDDeviceCategory" in descriptor_src,
+          "HID 顶层用途类别可切换（主机据此判断这是什么设备）")
+    check("reportDescriptor(for category" in descriptor_src,
+          "报告描述符按类别生成")
+    check("bytes[3] = category.topLevelUsage" in descriptor_src,
+          "只替换报告描述符下标 3 的顶层用途编号，其余字段不动")
+    check("HIDSpec.reportDescriptorData(for: category, includeMotion: includeMotion)" in builder_src2,
+          "服务构建时使用当前类别的报告描述符")
+    check("includeMotion: Bool = true" in descriptor_src
+          and "bytes.removeSubrange(start..<end)" in descriptor_src,
+          "报告描述符可去掉传感器集合（精简模式）")
+    check("compactHIDDescriptor" in settings_store_src,
+          "精简描述符开关已持久化")
+    check("let motionReportCharacteristic: CBMutableCharacteristic?" in builder_src2,
+          "精简模式下运动报告特征可缺省")
+    check("includeMotion: currentIncludeMotion" in control_point_src,
+          "16 位广播被拒后回退重建时保留精简设置")
+    check("hidCategory" in settings_store_src and "rebuildToken += 1" in settings_store_src,
+          "类别切换会重建 GATT 服务")
+    check("SIGUUID.deviceName" in builder_src2,
+          "GAP 服务补 0x2A00 设备名，让主机有机会显示 WP-Pad 而不是整机名")
+
+    check("0.4...4.0" in layout_src,
+          "控件缩放上限放大到 4 倍")
+    check("LayoutItem.scaleRange" in panel_src and "LayoutItem.scaleRange" in gamepad_src,
+          "滑块、步进与捏合三处共用同一缩放范围，不会各自为政")
+
     # ---------- 结论 ----------
     print("\n" + "=" * 62)
     if ISSUES:

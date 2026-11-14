@@ -17,6 +17,8 @@ final class SettingsStore: ObservableObject {
         static let motionEnabled = "waterpad.motionEnabled"
         static let appearanceID = "waterpad.appearanceID"
         static let advertiseHIDOnly = "waterpad.advertiseHIDOnly"
+        static let hidCategory = "waterpad.hidCategory"
+        static let compactHIDDescriptor = "waterpad.compactHIDDescriptor"
         static let layout = "waterpad.layout"
     }
 
@@ -39,6 +41,13 @@ final class SettingsStore: ObservableObject {
     @Published var appearanceID: String { didSet { defaults.set(appearanceID, forKey: Key.appearanceID); rebuildToken += 1 } }
     /// 排查开关：广播包只放 0x1812，尽量留足 31 字节预算。
     @Published var advertiseHIDOnly: Bool { didSet { defaults.set(advertiseHIDOnly, forKey: Key.advertiseHIDOnly); rebuildToken += 1 } }
+    /// HID 顶层用途类别，决定主机把本设备当成手柄、摇杆、多轴还是鼠标。
+    /// 改动会替换报告描述符里的顶层用途编号，必须重建 GATT 服务。
+    @Published var hidCategoryID: String { didSet { defaults.set(hidCategoryID, forKey: Key.hidCategory); rebuildToken += 1 } }
+    /// 精简 HID 描述符：去掉传感器集合与运动报告特征，只留手柄与力反馈。
+    /// 部分主机的 HID 解析器对传感器集合不友好，精简后更容易被接管。
+    /// 改动会改变 GATT 结构，必须重建服务。
+    @Published var compactHIDDescriptor: Bool { didSet { defaults.set(compactHIDDescriptor, forKey: Key.compactHIDDescriptor); rebuildToken += 1 } }
 
     /// 手柄控件布局（位置与缩放），可编辑并持久化。
     @Published var layout: PadLayout = .default
@@ -67,6 +76,8 @@ final class SettingsStore: ObservableObject {
         motionEnabled = stored.object(forKey: Key.motionEnabled) as? Bool ?? true
         appearanceID = stored.string(forKey: Key.appearanceID) ?? HIDAppearance.gamepad.rawValue
         advertiseHIDOnly = stored.object(forKey: Key.advertiseHIDOnly) as? Bool ?? false
+        hidCategoryID = stored.string(forKey: Key.hidCategory) ?? HIDDeviceCategory.gamepad.rawValue
+        compactHIDDescriptor = stored.object(forKey: Key.compactHIDDescriptor) as? Bool ?? false
 
         if let data = stored.data(forKey: Key.layout),
            let decoded = try? JSONDecoder().decode(PadLayout.self, from: data) {
@@ -91,4 +102,5 @@ final class SettingsStore: ObservableObject {
     }
 
     var appearance: HIDAppearance { .withID(appearanceID) }
+    var hidCategory: HIDDeviceCategory { .withID(hidCategoryID) }
 }

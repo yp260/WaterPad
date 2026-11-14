@@ -57,6 +57,80 @@ enum SIGUUID {
     static let modelNumber: UInt16         = 0x2A24
     static let firmwareRevision: UInt16    = 0x2A26
     static let pnpID: UInt16               = 0x2A50
+    static let deviceName: UInt16          = 0x2A00
+}
+
+/// HID Control Point（0x2A4C）的指令编号。
+///
+/// 蓝牙 SIG 官方 Assigned Numbers（0x2A4C 条目）明确写的是：
+/// 写入值 0 表示 Suspend，1 表示 Exit Suspend，2 到 255 保留，
+/// 并且注明「Suspend 与 Exit Suspend 没有定义响应码」。
+/// 这里按官方口径实现，另加一条回声通知作为兼容：
+/// 部分主机（尤其是走 HID Profile 1.0 那套 0x03/0x04 响应码的）
+/// 会订阅控制点通知并等待响应，收到回声字节就不会卡住等下去。
+enum HIDControlPoint {
+    /// 主机 → 设备：挂起（SIG 官方口径）
+    static let suspend: UInt8 = 0x00
+    /// 主机 → 设备：退出挂起（SIG 官方口径）
+    static let exitSuspend: UInt8 = 0x01
+    /// 兼容另一套流传口径：挂起请求
+    static let legacySuspend: UInt8 = 0x01
+    /// 兼容另一套流传口径：退出挂起请求
+    static let legacyExitSuspend: UInt8 = 0x02
+    /// 兼容另一套流传口径：挂起接受响应
+    static let legacySuspendAccepted: UInt8 = 0x03
+    /// 兼容另一套流传口径：退出挂起接受响应
+    static let legacyExitSuspendAccepted: UInt8 = 0x04
+}
+
+/// HID 顶层用途类别。
+///
+/// 主机不是看广播里的 Appearance 来决定「这是什么设备」，而是读 GATT 里的
+/// Report Map，按顶层用途（Usage Page 通用桌面 + Usage 编号）解析输入报告。
+/// 类别选错，主机可能读得懂报告却按错误的语义接管，或干脆不接管。
+///
+/// 鼠标类别在并行项目 PocketTrackpad 上已在 iPad 真机配对成功并可用，
+/// 手柄类别在 iPad 上能否接管尚未验证，因此这里做成可切换，用于逐个试。
+enum HIDDeviceCategory: String, CaseIterable, Codable, Identifiable {
+    case gamepad
+    case joystick
+    case multiAxis
+    case mouse
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .gamepad: return "游戏手柄"
+        case .joystick: return "摇杆"
+        case .multiAxis: return "多轴控制器"
+        case .mouse: return "鼠标"
+        }
+    }
+
+    /// 通用桌面用途页里的顶层用途编号。
+    var topLevelUsage: UInt8 {
+        switch self {
+        case .gamepad: return 0x05
+        case .joystick: return 0x04
+        case .multiAxis: return 0x08
+        case .mouse: return 0x02
+        }
+    }
+
+    /// 主机若接管成功，界面上大致会显示成什么设备的提示语。
+    var hostHint: String {
+        switch self {
+        case .gamepad: return "游戏会把它当手柄，通常需要游戏自己支持通用 HID 手柄"
+        case .joystick: return "系统会把它当摇杆，绘图类应用可用，游戏一般不认"
+        case .multiAxis: return "系统会把它当多轴控制器，绘图与航拍类应用可用"
+        case .mouse: return "系统会把它当鼠标，指针可动；iPad 上这条路径已真机验证可用"
+        }
+    }
+
+    static func withID(_ id: String) -> HIDDeviceCategory {
+        HIDDeviceCategory(rawValue: id) ?? .gamepad
+    }
 }
 
 // MARK: - HID 报告描述符分析结果
@@ -283,6 +357,48 @@ enum HIDSpec {
     ]
 
     static var reportDescriptorData: Data { Data(reportDescriptor) }
+
+    /// 按类别与是否含运动传感器生成报告描述符。
+    ///
+    /// 只替换顶层用途编号（描述符第 4 个字节，下标 3），其余字段一律不动：
+    /// 摇杆与扳机字段顺序、按钮位序、Hat Switch 取值、输出报告二
+    /// 都与 GamepadReport 的打包顺序严格对应，动了就会错位。
+    ///
+    /// includeMotion 为 false 时把传感器整段切掉，
+    /// 得到一份教科书式的手柄描述符。有些主机的 HID 解析器对传感器集合
+    /// （用途页 0x20）不友好，精简后更容易被接管。
+    static func reportDescriptor(for category: HIDDeviceCategory,
+                                 includeMotion: Bool = true) -> [UInt8] {
+        var bytes = reportDescriptor
+        if bytes.indices.contains(3) {
+            bytes[3] = category.topLevelUsage
+        }
+        guard !includeMotion else { return bytes }
+        // 传感器部分位于报告编号三的标记之后、报告编号二之前，整段切掉即可。
+        let motionStart: [UInt8] = [0x85, 0x03]
+        let outputStart: [UInt8] = [0x85, 0x02]
+        if let start = firstIndex(of: motionStart, in: bytes),
+           let end = firstIndex(of: outputStart, in: bytes), start < end {
+            bytes.removeSubrange(start..<end)
+        }
+        return bytes
+    }
+
+    /// 在字节数组里查找连续两个字节的首次出现位置。
+    private static func firstIndex(of pair: [UInt8], in bytes: [UInt8]) -> Int? {
+        guard bytes.count >= pair.count else { return nil }
+        for index in 0...(bytes.count - pair.count) {
+            if Array(bytes[index..<(index + pair.count)]) == pair {
+                return index
+            }
+        }
+        return nil
+    }
+
+    static func reportDescriptorData(for category: HIDDeviceCategory,
+                                     includeMotion: Bool = true) -> Data {
+        Data(reportDescriptor(for: category, includeMotion: includeMotion))
+    }
 
     /// 启动自检：把描述符按 HID 短项格式解析一遍，核对报告编号与位宽。
     /// 结果写入应用内日志，避免描述符与打包逻辑不同步时静默出错。

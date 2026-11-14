@@ -61,11 +61,16 @@ struct LayoutItem: Codable {
 
     static let neutral = LayoutItem(x: 0.5, y: 0.5)
 
-    /// 合法范围：位置 0...1，缩放 0.5...2.0。
+    /// 缩放合法范围。最大 4.0 倍：面键基础边长 46 点，放到 4 倍是 184 点，
+    /// 在 iPad 上已经接近四分之一屏宽，再大就没法用手指连续按压了。
+    static let scaleRange: ClosedRange<Double> = 0.4...4.0
+
+    /// 合法范围：位置 0...1，缩放 0.4...4.0。
     mutating func clamp() {
         x = min(1, max(0, x))
         y = min(1, max(0, y))
-        scale = min(2.0, max(0.5, scale))
+        scale = min(LayoutItem.scaleRange.upperBound,
+                    max(LayoutItem.scaleRange.lowerBound, scale))
     }
 }
 

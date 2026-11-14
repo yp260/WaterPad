@@ -89,9 +89,9 @@ struct ContentView: View {
                 .foregroundColor(.secondary)
                 .lineLimit(1)
             if peripheral.connectedCount > 0 {
-                Text("已连接 \(peripheral.connectedCount)")
+                Text(peripheral.hostConnectionText)
                     .font(.caption2)
-                    .foregroundColor(.green)
+                    .foregroundColor(peripheral.hostSubscribedInput ? .green : .orange)
                     .lineLimit(1)
             }
             Spacer(minLength: 2)

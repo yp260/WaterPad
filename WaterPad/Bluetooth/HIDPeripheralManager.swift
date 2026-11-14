@@ -18,6 +18,12 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     @Published private(set) var connectedCount = 0
     @Published private(set) var activeUUIDFormat = "完整 128 位"
     @Published private(set) var lastErrorMessage: String?
+    /// 主机连接诊断：主机是否读过报告描述符、是否写过控制点、是否订阅了输入报告。
+    /// 这三项决定 iPad 到底卡在哪一步排查。
+    @Published private(set) var hostReadReportMap = false
+    @Published private(set) var hostControlPointText = "未收到控制点指令"
+    @Published private(set) var hostSubscribedInput = false
+    @Published private(set) var hostConnectionText = "尚无主机连接"
 
     /// 主机通过输出报告下发力反馈时回调，参数是大马达与小马达力度（0 到 255）。
     var onRumble: ((UInt8, UInt8) -> Void)?
@@ -38,6 +44,13 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     /// 按键报告与运动报告是两个独立特征，主机可能只订阅其中一个。
     private var subscribedCentrals: [CBCentral] = []
     private var motionCentrals: [CBCentral] = []
+    /// 已建立链路的主机。连接数按这个算，而不是按订阅数——
+    /// 主机连上但还没订阅报告时，订阅数是零，界面会误报「没连上」。
+    private var connectedCentrals: [CBCentral] = []
+    /// 订阅了 HID 控制点通知的主机，控制点响应只发给它。
+    private var controlPointCentrals: [CBCentral] = []
+    /// 主机还没订阅控制点通知时暂存的响应字节，等它订阅后补发。
+    private var pendingControlPointResponse: (central: CBCentral, byte: UInt8)?
 
     private let reportLock = NSLock()
     private var latestReport: Data?
@@ -86,6 +99,9 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             self.serviceSet = nil
             self.subscribedCentrals.removeAll()
             self.motionCentrals.removeAll()
+            self.connectedCentrals.removeAll()
+            self.controlPointCentrals.removeAll()
+            self.pendingControlPointResponse = nil
             self.suspendedByHost = false
             self.reportLock.lock()
             self.latestReport = nil
@@ -95,6 +111,10 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                 self.isAdvertising = false
                 self.connectedCount = 0
                 self.bluetoothStateText = "未启动"
+                self.hostConnectionText = "尚无主机连接"
+                self.hostControlPointText = "未收到控制点指令"
+                self.hostSubscribedInput = false
+                self.hostReadReportMap = false
             }
             self.log.add("已停止广播并断开当前主机；点「开始广播」会重建全部服务")
         }
@@ -111,11 +131,14 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         let interval = settings.reportInterval
         let appearance = settings.appearance.data
         let hidOnly = settings.advertiseHIDOnly
+        let category = settings.hidCategory
+        let includeMotion = !settings.compactHIDDescriptor
         bleQueue.async { [weak self] in
             guard let self, self.manager?.state == .poweredOn else { return }
             self.rebuild(profile: profile, spoof: spoof, attemptShort: attemptShort,
                          includePrefix: includePrefix, name: name, interval: interval,
-                         appearance: appearance, hidOnly: hidOnly)
+                         appearance: appearance, hidOnly: hidOnly, category: category,
+                         includeMotion: includeMotion)
         }
     }
 
@@ -171,15 +194,24 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                          name: String,
                          interval: TimeInterval,
                          appearance: Data,
-                         hidOnly: Bool) {
+                         hidOnly: Bool,
+                         category: HIDDeviceCategory,
+                         includeMotion: Bool) {
         manager?.stopAdvertising()
         manager?.removeAllServices()
         subscribedCentrals.removeAll()
         motionCentrals.removeAll()
+        connectedCentrals.removeAll()
+        controlPointCentrals.removeAll()
+        pendingControlPointResponse = nil
         suspendedByHost = false
         DispatchQueue.main.async {
             self.isAdvertising = false
             self.connectedCount = 0
+            self.hostConnectionText = "尚无主机连接"
+            self.hostControlPointText = "未收到控制点指令"
+            self.hostSubscribedInput = false
+            self.hostReadReportMap = false
         }
 
         didFallback = false
@@ -188,7 +220,10 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             profile: profile,
             spoofIdentity: spoof,
             useFullHIDUUID: usingFullUUID,
-            appearance: appearance
+            appearance: appearance,
+            category: category,
+            deviceName: name,
+            includeMotion: includeMotion
         )
         serviceSet = set
 
@@ -200,6 +235,10 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         } else {
             for issue in analysis.issues { log.add(issue, level: .error) }
         }
+        log.add("HID 顶层用途类别：\(category.displayName)（用途编号 0x\(String(category.topLevelUsage, radix: 16))）。\(category.hostHint)")
+        log.add(includeMotion
+                ? "报告描述符含运动传感器集合（陀螺仪与加速度）"
+                : "报告描述符已精简：不含运动传感器集合，只保留手柄与力反馈")
 
         pendingAddCount = set.allServices.count
         completedAddCount = 0
@@ -210,6 +249,8 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         currentIncludeReportIDPrefix = includePrefix
         currentAppearance = appearance
         currentAdvertiseHIDOnly = hidOnly
+        currentCategory = category
+        currentIncludeMotion = includeMotion
         log.add("添加 \(pendingAddCount) 个 GATT 服务，HID 服务编号形式：\(set.uuidFormatDescription)")
         for service in set.allServices { manager?.add(service) }
     }
@@ -222,6 +263,10 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     private var currentIncludeReportIDPrefix = false
     private var currentAppearance = HIDAppearance.gamepad.data
     private var currentAdvertiseHIDOnly = false
+    /// 当前生效的 HID 顶层用途类别。
+    private var currentCategory: HIDDeviceCategory = .gamepad
+    /// 当前描述符里是否带运动传感器集合。
+    private var currentIncludeMotion = true
     /// 16 位广播被系统拒绝时才切到 true，日志会明确提示主机大概率发现不了。
     private var advertisingUsesFullUUIDs = false
 
@@ -283,11 +328,13 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                 }
             }
         }
-        if let motionData, !motionCentrals.isEmpty {
+        if let motionData,
+           let motionCharacteristic = set.motionReportCharacteristic,
+           !motionCentrals.isEmpty {
             // 运动报告满量程 ±2000 度/秒、±16G；主机不订阅则零开销。
             _ = manager.updateValue(
                 motionData,
-                for: set.motionReportCharacteristic,
+                for: motionCharacteristic,
                 onSubscribedCentrals: motionCentrals
             )
         }
@@ -318,9 +365,12 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             let interval = settings.reportInterval
             let appearance = settings.appearance.data
             let hidOnly = settings.advertiseHIDOnly
+            let category = settings.hidCategory
+            let includeMotion = !settings.compactHIDDescriptor
             rebuild(profile: profile, spoof: spoof, attemptShort: attemptShort,
                     includePrefix: includePrefix, name: name, interval: interval,
-                    appearance: appearance, hidOnly: hidOnly)
+                    appearance: appearance, hidOnly: hidOnly, category: category,
+                    includeMotion: includeMotion)
         } else {
             DispatchQueue.main.async { self.isAdvertising = false }
         }
@@ -349,7 +399,9 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                         name: currentAdvertisedName,
                         interval: currentInterval,
                         appearance: currentAppearance,
-                        hidOnly: currentAdvertiseHIDOnly)
+                        hidOnly: currentAdvertiseHIDOnly,
+                        category: currentCategory,
+                        includeMotion: currentIncludeMotion)
                 return
             }
             if code == SIGUUID.hidService {
@@ -398,6 +450,52 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         }
     }
 
+    // MARK: - 链路建立与断开
+    //
+    // 这三个回调以前完全没实现，导致界面上的「已连接 0 台」其实分不清
+    // 「主机根本没连」和「连上了但没订阅报告」这两种完全不同的故障。
+
+    func peripheralManager(_ peripheral: CBPeripheralManager,
+                           central: CBCentral,
+                           didConnect central: CBCentral) {
+        if !connectedCentrals.contains(where: { $0 === central }) {
+            connectedCentrals.append(central)
+        }
+        log.add("主机已建立链路：\(central.identifier.uuidString.prefix(8))，接下来读取报告描述符")
+        DispatchQueue.main.async {
+            self.hostConnectionText = "已连接，等待主机读取报告描述符"
+        }
+        publishConnectedCount()
+    }
+
+    func peripheralManager(_ peripheral: CBPeripheralManager,
+                           central: CBCentral,
+                           didDisconnectPeripheral timestamp: CFAbsoluteTime,
+                           isReconnecting: Bool,
+                           error: Error?) {
+        connectedCentrals.removeAll { $0 === central }
+        subscribedCentrals.removeAll { $0 === central }
+        motionCentrals.removeAll { $0 === central }
+        controlPointCentrals.removeAll { $0 === central }
+        pendingControlPointResponse = nil
+        let reason = error.map { "：\($0.localizedDescription)" } ?? ""
+        log.add("主机断开链路\(isReconnecting ? "（系统正在自动重连）" : "")\(reason)")
+        DispatchQueue.main.async {
+            self.hostConnectionText = "已断开"
+            self.hostSubscribedInput = false
+        }
+        publishConnectedCount()
+    }
+
+    func peripheralManager(_ peripheral: CBPeripheralManager,
+                           central: CBCentral,
+                           didFailToConnect error: Error?) {
+        log.add("连接主机失败：\(error?.localizedDescription ?? "未知原因")", level: .error)
+        DispatchQueue.main.async {
+            self.hostConnectionText = "连接失败：\(error?.localizedDescription ?? "未知原因")"
+        }
+    }
+
     func peripheralManager(_ peripheral: CBPeripheralManager,
                            central: CBCentral,
                            didSubscribeTo characteristic: CBCharacteristic) {
@@ -406,12 +504,27 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             if !subscribedCentrals.contains(where: { $0 === central }) {
                 subscribedCentrals.append(central)
             }
-            log.add("主机订阅输入报告，当前连接数 \(connectedTotal)")
-        } else if characteristic === set.motionReportCharacteristic {
+            log.add("主机订阅输入报告，当前已连接 \(connectedCentrals.count) 台")
+            DispatchQueue.main.async { self.hostSubscribedInput = true }
+        } else if let motion = set.motionReportCharacteristic, characteristic === motion {
             if !motionCentrals.contains(where: { $0 === central }) {
                 motionCentrals.append(central)
             }
-            log.add("主机订阅运动报告（陀螺仪与加速度），当前连接数 \(connectedTotal)")
+            log.add("主机订阅运动报告（陀螺仪与加速度），当前已连接 \(connectedCentrals.count) 台")
+        } else if characteristic === set.hidControlPointCharacteristic {
+            if !controlPointCentrals.contains(where: { $0 === central }) {
+                controlPointCentrals.append(central)
+            }
+            log.add("主机订阅 HID 控制点通知，可以回送挂起响应")
+            // 主机是先写控制点、后订阅通知的，补发之前暂存的响应
+            if let pending = pendingControlPointResponse {
+                pendingControlPointResponse = nil
+                let sent = peripheral.updateValue(Data([pending.byte]),
+                                                 for: characteristic,
+                                                 onSubscribedCentrals: [central])
+                log.add("补发控制点响应 0x\(String(pending.byte, radix: 16))：\(sent ? "已发出" : "仍失败")")
+            }
+            return
         } else {
             return
         }
@@ -425,16 +538,20 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         guard let set = serviceSet else { return }
         if characteristic === set.inputReportCharacteristic {
             subscribedCentrals.removeAll { $0 === central }
-        } else if characteristic === set.motionReportCharacteristic {
+            DispatchQueue.main.async { self.hostSubscribedInput = false }
+        } else if let motion = set.motionReportCharacteristic, characteristic === motion {
             motionCentrals.removeAll { $0 === central }
+        } else if characteristic === set.hidControlPointCharacteristic {
+            controlPointCentrals.removeAll { $0 === central }
         } else {
             return
         }
-        log.add("主机取消订阅，当前连接数 \(connectedTotal)")
+        log.add("主机取消订阅，当前已连接 \(connectedCentrals.count) 台")
         publishConnectedCount()
     }
 
-    /// 两个报告特征独立订阅，界面显示的连接数取两者并集。
+    /// 两个报告特征独立订阅，界面显示的连接数取已建立链路的 centrals，
+    /// 不再用订阅数——主机连上但还没订阅时订阅数是零，会被误判成没连上。
     private var connectedTotal: Int {
         var seen: [CBCentral] = []
         for central in subscribedCentrals + motionCentrals {
@@ -444,8 +561,16 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     }
 
     private func publishConnectedCount() {
-        let count = connectedTotal
-        DispatchQueue.main.async { self.connectedCount = count }
+        let total = connectedCentrals.count
+        let subscribed = connectedTotal
+        DispatchQueue.main.async {
+            self.connectedCount = total
+            if total > 0 {
+                self.hostConnectionText = subscribed > 0
+                    ? "已连接 \(total) 台，输入报告已被订阅"
+                    : "已连接 \(total) 台，等待主机订阅输入报告"
+            }
+        }
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager,
@@ -465,7 +590,8 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                 profile: currentProfile,
                 includeReportIDPrefix: currentIncludeReportIDPrefix
             )
-        } else if request.characteristic === set.motionReportCharacteristic {
+        } else if let motion = set.motionReportCharacteristic,
+                  request.characteristic === motion {
             reportLock.lock()
             let cached = latestMotionReport
             reportLock.unlock()
@@ -481,6 +607,11 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             peripheral.respond(to: request, withResult: .attributeNotFound)
             return
         }
+        // 主机读报告描述符是建立 HID 连接的关键一步，读到了才算真正认了这个设备。
+        if SIGUUID.shortCode(request.characteristic.uuid) == SIGUUID.reportMap {
+            DispatchQueue.main.async { self.hostReadReportMap = true }
+            log.add("主机读取报告描述符，共 \(data.count) 字节，顶层用途 \(currentCategory.displayName)")
+        }
         let offset = max(0, request.offset)
         request.value = offset >= data.count ? Data() : data.subdata(in: offset..<data.count)
         peripheral.respond(to: request, withResult: .success)
@@ -488,7 +619,7 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
 
     func peripheralManager(_ peripheral: CBPeripheralManager,
                            didReceiveWrite requests: [CBATTRequest]) {
-        guard let set = serviceSet, let first = requests.first else { return }
+        guard let set = serviceSet else { return }
 
         for request in requests {
             let bytes = Array(request.value ?? Data())
@@ -500,17 +631,76 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                     }
                 }
             } else if request.characteristic === set.hidControlPointCharacteristic {
-                let command = bytes.first ?? 0x01
-                suspendedByHost = command == 0x00
-                log.add("主机控制点指令：\(suspendedByHost ? "挂起" : "退出挂起")")
+                handleControlPoint(peripheral: peripheral, central: request.central, command: bytes.first)
             } else if request.characteristic === set.protocolModeCharacteristic {
                 protocolModeValue = bytes.first ?? 0x01
                 log.add("主机设置协议模式：\(protocolModeValue == 0 ? "启动协议" : "报告协议")")
             }
+            // 带响应的写必须逐条应答；Write Without Response 的不能应答，
+            // 否则系统会当成写失败。
+            if request.characteristic.properties.contains(.write) {
+                peripheral.respond(to: request, withResult: .success)
+            }
+        }
+    }
+
+    /// 处理 HID Control Point 指令。
+    ///
+    /// 蓝牙 SIG 官方 Assigned Numbers 对 0x2A4C 的口径是：
+    /// 写入 0x00 表示挂起、0x01 表示退出挂起，并注明这两个命令没有定义响应码。
+    /// 主线行为按官方口径：收到挂起就停发输入报告，收到退出挂起就恢复。
+    ///
+    /// 另有一套流传口径（0x01 挂起 / 0x02 退出挂起 / 0x03、0x04 为接受响应），
+    /// 它在 0x01、0x02 上与官方口径重叠，没法完全区分。
+    /// 为兼顾「主机会等响应」的情况，这里补一条回声通知，
+    /// 回声字节取主机写进来的那个值：官方口径下等于标准响应，
+    /// 另一套口径下至少不会让主机无限等待。
+    private func handleControlPoint(peripheral: CBPeripheralManager,
+                                    central: CBCentral,
+                                    command: UInt8?) {
+        let value = command ?? HIDControlPoint.suspend
+        var suspendRequested = false
+        var resumeRequested = false
+
+        if value == HIDControlPoint.suspend {
+            suspendRequested = true
+        } else if value == HIDControlPoint.exitSuspend {
+            resumeRequested = true
+        } else if value == HIDControlPoint.legacyExitSuspend {
+            resumeRequested = true
+        } else {
+            log.add("未知的控制点指令 0x\(String(value, radix: 16))，按忽略处理", level: .warn)
+            return
         }
 
-        if first.characteristic.properties.contains(.write) {
-            peripheral.respond(to: first, withResult: .success)
+        if suspendRequested {
+            suspendedByHost = true
+            log.add("主机请求挂起（控制点 0x00），停止发送输入报告")
+        }
+        if resumeRequested {
+            suspendedByHost = false
+            log.add("主机请求退出挂起（控制点 0x\(String(value, radix: 16))），恢复发送输入报告")
+        }
+        sendControlPointResponse(peripheral: peripheral, central: central, byte: value)
+        let text = suspendRequested
+            ? "已收到挂起请求并回声 0x00"
+            : "已收到退出挂起请求并回声 0x\(String(value, radix: 16))"
+        DispatchQueue.main.async { self.hostControlPointText = text }
+    }
+
+    private func sendControlPointResponse(peripheral: CBPeripheralManager,
+                                          central: CBCentral,
+                                          byte: UInt8) {
+        guard let set = serviceSet else { return }
+        let sent = peripheral.updateValue(Data([byte]),
+                                          for: set.hidControlPointCharacteristic,
+                                          onSubscribedCentrals: [central])
+        if sent {
+            log.add("控制点响应 0x\(String(byte, radix: 16)) 已用通知发出")
+        } else {
+            // 主机还没订阅控制点通知，先暂存，等它订阅后补发。
+            pendingControlPointResponse = (central, byte)
+            log.add("主机尚未订阅控制点通知，响应暂存，订阅后补发", level: .warn)
         }
     }
 }

@@ -76,6 +76,9 @@ struct SettingsView: View {
                 }
 
                 Section("搜不到设备时按这个顺序排查") {
+                    Text("0. 主机蓝牙列表里显示的多半是这台 iPhone 的整机名称，不是 WP-Pad。找不到 WP-Pad 是正常的，请在列表里找你自己的手机名。App 已尝试在自建 GAP 服务里补 0x2A00 设备名，但系统共享的 GAP 服务可能覆盖它。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     Text("1. 点「开始广播」，确认本页「广播」显示进行中，日志出现「广播已开启」。若没有，点「复制全部」把日志发回。")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -98,7 +101,7 @@ struct SettingsView: View {
                 }
 
                 Section("已知边界") {
-                    Text("主机得到的是通用 HID 游戏手柄，不是 XInput 的 Xbox 设备，也不会通过 PS4、Switch 或 Xbox 主机的认证握手。iOS 不向 App 开放广播包的 GAP Appearance，Windows 与多数安卓机的蓝牙发现列表依赖该字段判定设备类别，因此纯 iOS 软件无法保证被它们列出；并行项目 PocketTrackpad 已真机确认这一点，并为此改走 ESP32 硬件桥。iPadOS 能否接管「手柄」这一 HID 类别尚未真机验证；同一条蓝牙链路上「鼠标」类别已在 iPad 上配对成功，请以本机实测为准。GATT 服务用完整 128 位编号、广播用 16 位编号属于利用系统检查口径差异，系统更新可能封掉此路径，上架审核亦有风险。应用必须保持前台，退到后台或锁屏后广播会受限。")
+                    Text("主机得到的是通用 HID 游戏手柄，不是 XInput 的 Xbox 设备，也不会通过 PS4、Switch 或 Xbox 主机的认证握手。iOS 不向 App 开放广播包的 GAP Appearance，Windows 与多数安卓机的蓝牙发现列表依赖该字段判定设备类别，因此纯 iOS 软件无法保证被它们列出；并行项目 PocketTrackpad 已真机确认这一点，并为此改走 ESP32 硬件桥。主机是靠读报告描述符的顶层用途来判断设备类别的，所以本 App 把类别做成了可切换项，可逐个试手柄、摇杆、多轴与鼠标；iPadOS 能否接管「手柄」这一类别尚未真机验证，而「鼠标」类别已在 iPad 上配对成功。GATT 服务用完整 128 位编号、广播用 16 位编号属于利用系统检查口径差异，系统更新可能封掉此路径，上架审核亦有风险。应用必须保持前台，退到后台或锁屏后广播会受限。")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -114,6 +117,34 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                     Toggle("广播只放 0x1812（极简模式）", isOn: $settings.advertiseHIDOnly)
                     Text("默认广播 1812 / 180F / 180A 三个编号，估算占用 21/31 字节。打开后只放 HID 服务，留足广播预算，用于排查是否被挤进 overflow 区。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Section("HID 类别（主机按这个判断这是什么设备）") {
+                    Picker("设备类别", selection: $settings.hidCategoryID) {
+                        ForEach(HIDDeviceCategory.allCases) { category in
+                            Text(category.displayName).tag(category.id)
+                        }
+                    }
+                    Text(settings.hidCategory.hostHint)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("改的是报告描述符里的顶层用途编号，切换后自动重建服务并重新广播。手柄类别在 iPad 上能否接管尚未验证；若连不上，请逐个试摇杆、多轴、鼠标——鼠标类别已在 iPad 真机配对成功，可用来确认蓝牙链路本身是否正常。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Toggle("精简 HID 描述符（去掉陀螺仪与加速度）", isOn: $settings.compactHIDDescriptor)
+                    Text("只保留手柄与力反馈两部分，是最标准的手柄描述符。有些主机的 HID 解析器碰到传感器集合（用途页 0x20）会放弃接管整个设备，精简后更可能被识别。打开后陀螺仪与加速度数据不会被发送，切换会重建服务并重新广播。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Section("主机连接诊断") {
+                    row(title: "链路状态", value: peripheral.hostConnectionText)
+                    row(title: "报告描述符", value: peripheral.hostReadReportMap ? "主机已读取" : "主机未读取")
+                    row(title: "控制点", value: peripheral.hostControlPointText)
+                    row(title: "输入报告", value: peripheral.hostSubscribedInput ? "主机已订阅" : "主机未订阅")
+                    Text("判定顺序：链路状态显示已连接、但报告描述符一直未读取，说明主机认得这个 HID 服务却没走完流程；读了描述符却不订阅输入报告，说明它不接管这个设备类别；控制点一直没有响应，主机多半会主动断开。")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

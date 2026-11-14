@@ -334,7 +334,8 @@ private struct LayoutControl<Content: View>: View {
                     }
                     let base = pinchBase ?? 1
                     var updated = item
-                    updated.scale = min(2.0, max(0.5, base * Double(value)))
+                    updated.scale = min(LayoutItem.scaleRange.upperBound,
+                                        max(LayoutItem.scaleRange.lowerBound, base * Double(value)))
                     item = updated
                 }
                 .onEnded { _ in

@@ -9,7 +9,8 @@ struct HIDServiceSet {
 
     let inputReportCharacteristic: CBMutableCharacteristic
     let outputReportCharacteristic: CBMutableCharacteristic
-    let motionReportCharacteristic: CBMutableCharacteristic
+    /// 运动报告特征。精简描述符模式下不注册这个特征，为 nil。
+    let motionReportCharacteristic: CBMutableCharacteristic?
     let protocolModeCharacteristic: CBMutableCharacteristic
     let hidControlPointCharacteristic: CBMutableCharacteristic
 
@@ -23,7 +24,7 @@ struct HIDServiceSet {
 
     func readValue(for characteristic: CBCharacteristic) -> Data? {
         if characteristic === inputReportCharacteristic { return nil }
-        if characteristic === motionReportCharacteristic { return nil }
+        if let motion = motionReportCharacteristic, characteristic === motion { return nil }
         if characteristic === outputReportCharacteristic { return Data([0x00, 0x00]) }
         guard let code = SIGUUID.shortCode(characteristic.uuid) else { return nil }
         return staticReadValues[code]
@@ -43,7 +44,10 @@ enum HIDServiceBuilder {
         profile: ControllerProfile,
         spoofIdentity: Bool,
         useFullHIDUUID: Bool,
-        appearance: Data
+        appearance: Data,
+        category: HIDDeviceCategory = .gamepad,
+        deviceName: String = "WP-Pad",
+        includeMotion: Bool = true
     ) -> HIDServiceSet {
         let hidServiceUUID = useFullHIDUUID
             ? SIGUUID.full(SIGUUID.hidService)
@@ -67,9 +71,12 @@ enum HIDServiceBuilder {
             properties: [.read, .writeWithoutResponse],
             permissions: [.readable, .writeable]
         )
+        // HID Control Point（0x2A4C）：主机写 Suspend / Resume，设备必须用通知回送
+        // 接受响应（0x03 / 0x04）。缺了 .notify 就无法回包，主机会在建立 HID 连接
+        // 阶段一直等不到响应，表现为「能搜到、连上又断」。
         let controlPoint = characteristic(
             SIGUUID.hidControlPoint,
-            properties: [.writeWithoutResponse],
+            properties: [.writeWithoutResponse, .notify],
             permissions: [.writeable]
         )
 
@@ -95,20 +102,29 @@ enum HIDServiceBuilder {
 
         // 运动报告特征：陀螺仪三轴加加速度计三轴。主机不认识也能正常用手柄，
         // 该特征只在主机主动订阅后才开始发送。
-        let motionReport = characteristic(
-            SIGUUID.hidReport,
-            properties: [.read, .notify],
-            permissions: [.readable, .readEncryptionRequired]
-        )
-        motionReport.descriptors = [
-            CBMutableDescriptor(type: SIGUUID.full(SIGUUID.reportReference),
-                                value: HIDSpec.motionReportReference)
-        ]
+        // 精简描述符模式下整个特征都不注册，免得主机看到有报告编号却找不到对应描述。
+        var motionReport: CBMutableCharacteristic?
+        if includeMotion {
+            let characteristic = characteristic(
+                SIGUUID.hidReport,
+                properties: [.read, .notify],
+                permissions: [.readable, .readEncryptionRequired]
+            )
+            characteristic.descriptors = [
+                CBMutableDescriptor(type: SIGUUID.full(SIGUUID.reportReference),
+                                    value: HIDSpec.motionReportReference)
+            ]
+            motionReport = characteristic
+        }
 
-        hidService.characteristics = [
-            hidInformation, reportMap, protocolMode, controlPoint,
-            inputReport, motionReport, outputReport
+        var hidCharacteristics: [CBMutableCharacteristic] = [
+            hidInformation, reportMap, protocolMode, controlPoint, inputReport
         ]
+        if let motionReport = motionReport {
+            hidCharacteristics.append(motionReport)
+        }
+        hidCharacteristics.append(outputReport)
+        hidService.characteristics = hidCharacteristics
 
         // MARK: 设备信息服务
         let deviceInformationService = CBMutableService(
@@ -120,16 +136,21 @@ enum HIDServiceBuilder {
         let firmware = characteristic(SIGUUID.firmwareRevision, properties: [.read], permissions: [.readable])
         deviceInformationService.characteristics = [pnpID, manufacturer, model, firmware]
 
-        // MARK: Generic Access 服务（GAP Appearance）
+        // MARK: Generic Access 服务（GAP Appearance 与设备名）
         // iOS 不允许 App 在广播包里写 Appearance AD Type，只能在 GATT 里补 0x1800/0x2A01。
         // 若系统拒绝注册该服务，didAdd 会记日志但不会阻断 HID 主链路与广播。
+        // 0x2A00 设备名同理：主机列表优先显示整机 GAP 名称，自建 GAP 若被系统忽略则无效，
+        // 但留着没有副作用，万一主机读了自建 GAP 就能显示 WP-Pad 而不是 iPhone 的名字。
         let genericAccessService = CBMutableService(
             type: SIGUUID.full(SIGUUID.genericAccessService), primary: false
         )
         let appearanceCharacteristic = characteristic(
             SIGUUID.appearance, properties: [.read], permissions: [.readable]
         )
-        genericAccessService.characteristics = [appearanceCharacteristic]
+        let gapDeviceName = characteristic(
+            SIGUUID.deviceName, properties: [.read], permissions: [.readable]
+        )
+        genericAccessService.characteristics = [appearanceCharacteristic, gapDeviceName]
 
         // MARK: 电池服务
         let batteryService = CBMutableService(
@@ -140,14 +161,15 @@ enum HIDServiceBuilder {
 
         let staticReadValues: [UInt16: Data] = [
             SIGUUID.hidInformation: HIDSpec.hidInformation,
-            SIGUUID.reportMap: HIDSpec.reportDescriptorData,
+            SIGUUID.reportMap: HIDSpec.reportDescriptorData(for: category, includeMotion: includeMotion),
             SIGUUID.protocolMode: HIDSpec.protocolModeReport,
             SIGUUID.pnpID: profile.pnpIDData(spoofing: spoofIdentity),
             SIGUUID.manufacturerName: Data("Water".utf8),
             SIGUUID.modelNumber: Data("WP-01".utf8),
             SIGUUID.firmwareRevision: Data("1.0.0".utf8),
             SIGUUID.batteryLevel: Data([0x64]),
-            SIGUUID.appearance: appearance
+            SIGUUID.appearance: appearance,
+            SIGUUID.deviceName: Data(deviceName.utf8)
         ]
 
         return HIDServiceSet(

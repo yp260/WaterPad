@@ -303,6 +303,7 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     }
 
     private func sendLatestReport() {
+        dropDisconnectedCentrals()
         guard let set = serviceSet,
               !suspendedByHost,
               let manager else { return }
@@ -338,6 +339,26 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                 onSubscribedCentrals: motionCentrals
             )
         }
+    }
+
+    /// 用 central.state 清理已断开的主机。
+    /// 外设侧不一定有断开回调，靠状态轮询最稳。
+    private func dropDisconnectedCentrals() {
+        guard !connectedCentrals.isEmpty else { return }
+        let alive = connectedCentrals.filter { $0.state == .connected }
+        guard alive.count != connectedCentrals.count else { return }
+        for central in connectedCentrals where central.state != .connected {
+            subscribedCentrals.removeAll { $0 === central }
+            motionCentrals.removeAll { $0 === central }
+            controlPointCentrals.removeAll { $0 === central }
+        }
+        connectedCentrals = alive
+        log.add("主机断开链路，当前已连接 \(alive.count) 台")
+        DispatchQueue.main.async {
+            self.hostConnectionText = alive.isEmpty ? "已断开" : "已连接 \(alive.count) 台"
+            self.hostSubscribedInput = false
+        }
+        publishConnectedCount()
     }
 
     // MARK: - CBPeripheralManagerDelegate
@@ -452,54 +473,31 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
 
     // MARK: - 链路建立与断开
     //
-    // 这三个回调以前完全没实现，导致界面上的「已连接 0 台」其实分不清
+    // 外设侧没有可靠的「已连接」回调：CBPeripheralManagerDelegate 只提供
+    // 订阅与退订，连接成立与否要从主机读特征、写控制点这些回调里拿到 central。
+    // 以前这些 central 全被丢掉，界面上的「已连接 0 台」其实分不清
     // 「主机根本没连」和「连上了但没订阅报告」这两种完全不同的故障。
+    // 现在统一由 registerCentral 登记，掉线靠 central.state 轮询发现。
 
-    func peripheralManager(_ peripheral: CBPeripheralManager,
-                           central: CBCentral,
-                           didConnect central: CBCentral) {
-        if !connectedCentrals.contains(where: { $0 === central }) {
-            connectedCentrals.append(central)
-        }
-        log.add("主机已建立链路：\(central.identifier.uuidString.prefix(8))，接下来读取报告描述符")
+    /// 记录已建立链路的主机。
+    ///
+    /// 外设侧没有可靠的「已连接」回调，主机一旦连上必然会读报告描述符、
+    /// 写控制点或订阅报告特征，这些回调里都带着 central，
+    /// 以此作为连接成立的证据，比等订阅更早也更准。
+    private func registerCentral(_ central: CBCentral) {
+        guard !connectedCentrals.contains(where: { $0 === central }) else { return }
+        connectedCentrals.append(central)
         DispatchQueue.main.async {
-            self.hostConnectionText = "已连接，等待主机读取报告描述符"
+            self.hostConnectionText = "已连接，握手进行中"
         }
         publishConnectedCount()
-    }
-
-    func peripheralManager(_ peripheral: CBPeripheralManager,
-                           central: CBCentral,
-                           didDisconnectPeripheral timestamp: CFAbsoluteTime,
-                           isReconnecting: Bool,
-                           error: Error?) {
-        connectedCentrals.removeAll { $0 === central }
-        subscribedCentrals.removeAll { $0 === central }
-        motionCentrals.removeAll { $0 === central }
-        controlPointCentrals.removeAll { $0 === central }
-        pendingControlPointResponse = nil
-        let reason = error.map { "：\($0.localizedDescription)" } ?? ""
-        log.add("主机断开链路\(isReconnecting ? "（系统正在自动重连）" : "")\(reason)")
-        DispatchQueue.main.async {
-            self.hostConnectionText = "已断开"
-            self.hostSubscribedInput = false
-        }
-        publishConnectedCount()
-    }
-
-    func peripheralManager(_ peripheral: CBPeripheralManager,
-                           central: CBCentral,
-                           didFailToConnect error: Error?) {
-        log.add("连接主机失败：\(error?.localizedDescription ?? "未知原因")", level: .error)
-        DispatchQueue.main.async {
-            self.hostConnectionText = "连接失败：\(error?.localizedDescription ?? "未知原因")"
-        }
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager,
                            central: CBCentral,
                            didSubscribeTo characteristic: CBCharacteristic) {
         guard let set = serviceSet else { return }
+        registerCentral(central)
         if characteristic === set.inputReportCharacteristic {
             if !subscribedCentrals.contains(where: { $0 === central }) {
                 subscribedCentrals.append(central)
@@ -520,7 +518,7 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             if let pending = pendingControlPointResponse {
                 pendingControlPointResponse = nil
                 let sent = peripheral.updateValue(Data([pending.byte]),
-                                                 for: characteristic,
+                                                 for: set.hidControlPointCharacteristic,
                                                  onSubscribedCentrals: [central])
                 log.add("补发控制点响应 0x\(String(pending.byte, radix: 16))：\(sent ? "已发出" : "仍失败")")
             }
@@ -536,6 +534,7 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                            central: CBCentral,
                            didUnsubscribeFrom characteristic: CBCharacteristic) {
         guard let set = serviceSet else { return }
+        registerCentral(central)
         if characteristic === set.inputReportCharacteristic {
             subscribedCentrals.removeAll { $0 === central }
             DispatchQueue.main.async { self.hostSubscribedInput = false }
@@ -575,6 +574,7 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
 
     func peripheralManager(_ peripheral: CBPeripheralManager,
                            didReceiveRead request: CBATTRequest) {
+        registerCentral(request.central)
         guard let set = serviceSet else {
             peripheral.respond(to: request, withResult: .attributeNotFound)
             return
@@ -609,7 +609,10 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         }
         // 主机读报告描述符是建立 HID 连接的关键一步，读到了才算真正认了这个设备。
         if SIGUUID.shortCode(request.characteristic.uuid) == SIGUUID.reportMap {
-            DispatchQueue.main.async { self.hostReadReportMap = true }
+            DispatchQueue.main.async {
+                self.hostReadReportMap = true
+                self.hostConnectionText = "已连接，主机已读取报告描述符"
+            }
             log.add("主机读取报告描述符，共 \(data.count) 字节，顶层用途 \(currentCategory.displayName)")
         }
         let offset = max(0, request.offset)
@@ -622,6 +625,7 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         guard let set = serviceSet else { return }
 
         for request in requests {
+            registerCentral(request.central)
             let bytes = Array(request.value ?? Data())
             if request.characteristic === set.outputReportCharacteristic {
                 if let rumble = GamepadReport.parseRumble(Data(bytes)) {

@@ -567,10 +567,13 @@ def main():
     check("value == HIDControlPoint.suspend" in control_point_src,
           "挂起判定用官方口径的 0x00（曾误按 0x01/0x02 另一套口径实现）")
 
-    for callback in ("didConnect central", "didDisconnectPeripheral", "didFailToConnect"):
+    for callback in ("registerCentral(request.central)", "registerCentral(central)"):
         check(callback in control_point_src,
-              f"实现了 {callback} 回调",
-              "" if callback in control_point_src else "缺失则无法区分没连上与连上没订阅")
+              f"读/写/订阅回调里登记主机（{callback}）")
+    check("dropDisconnectedCentrals" in control_point_src and "$0.state == .connected" in control_point_src,
+          "用 central.state 轮询发现掉线")
+    check("didConnect central:" not in control_point_src,
+          "不再声明外设侧连接回调（参数同名会与协议可选方法冲突，编译失败）")
     check("connectedCentrals.count" in control_point_src,
           "连接数按已建立链路的主机计算，不再用订阅数")
     check("hostReadReportMap" in control_point_src and "hostControlPointText" in control_point_src

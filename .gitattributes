@@ -8,6 +8,7 @@
 *.plist text eol=lf
 *.md   text eol=lf
 *.html text eol=lf
+*.py   text eol=lf
 
 # Windows 上的脚本用 CRLF，PowerShell 5.1 读取更稳
 *.ps1  text eol=crlf

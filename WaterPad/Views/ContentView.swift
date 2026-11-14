@@ -73,24 +73,28 @@ struct ContentView: View {
     }
 
     private var statusBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Circle()
                 .fill(peripheral.isAdvertising ? Color.green : Color.orange)
                 .frame(width: 8, height: 8)
             Text(peripheral.isAdvertising ? "广播中" : "未广播")
                 .font(.caption)
+                .lineLimit(1)
             Text(peripheral.bluetoothStateText)
-                .font(.caption)
+                .font(.caption2)
                 .foregroundColor(.secondary)
-            if peripheral.connectedCount > 0 {
-                Text("已连接 \(peripheral.connectedCount) 台")
-                    .font(.caption)
-                    .foregroundColor(.green)
-            }
+                .lineLimit(1)
             Text(settings.profile.displayName)
-                .font(.caption)
+                .font(.caption2)
                 .foregroundColor(.secondary)
-            Spacer(minLength: 4)
+                .lineLimit(1)
+            if peripheral.connectedCount > 0 {
+                Text("已连接 \(peripheral.connectedCount)")
+                    .font(.caption2)
+                    .foregroundColor(.green)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 2)
             Button(peripheral.isAdvertising ? "停止广播" : "开始广播") {
                 if peripheral.isAdvertising {
                     peripheral.stop()
@@ -101,16 +105,24 @@ struct ContentView: View {
             .font(.caption2)
             .buttonStyle(.bordered)
             .controlSize(.mini)
-            if !settings.isEditingLayout {
-                Button("布局") { settings.isEditingLayout = true }
-                    .font(.caption)
+            // 布局编辑入口常驻：编辑态下按钮文案变为「结束编辑」，
+            // 离开编辑时 GamepadView 会自动把草稿提交并持久化。
+            Button(settings.isEditingLayout ? "结束编辑" : "布局") {
+                settings.isEditingLayout.toggle()
             }
+            .font(.caption2)
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
             Button("日志") { showingLog = true }
-                .font(.caption)
+                .font(.caption2)
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
             Button("设置") { showingSettings = true }
-                .font(.caption)
+                .font(.caption2)
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
     }
 }

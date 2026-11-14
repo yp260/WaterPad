@@ -132,6 +132,9 @@ struct SettingsView: View {
                         dismiss()
                         settings.isEditingLayout = true
                     }
+                    Text("编辑态操作：轻点屏幕上的控件即选中，拖动改位置，双指捏合改大小；底部名称条列出全部 17 个控件，按名字也能直接选中，再用 X / Y / 大小三条滑块或步进按钮精确调整。任何改动即时保存。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     Button("重置为默认布局") {
                         settings.layout = .default
                         settings.persistLayout()

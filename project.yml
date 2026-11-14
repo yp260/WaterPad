@@ -8,7 +8,9 @@ settings:
   base:
     # SWIFT_VERSION 只接受语言模式（4.0/4.2/5.0/6.0），5.9 会导致 xcodebuild 报错
     SWIFT_VERSION: "5.0"
-    TARGETED_DEVICE_FAMILY: "1"
+    # 1 = iPhone，2 = iPad。必须同时支持 iPad：只写 1 时 App 在 iPad 上
+    # 以 iPhone 兼容模式运行（缩放的小窗口），手柄区被压扁，布局编辑几乎不可用。
+    TARGETED_DEVICE_FAMILY: "1,2"
     SUPPORTS_MACCATALYST: "NO"
 targets:
   WaterPad:
@@ -34,6 +36,9 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        # iPad 上锁定全屏，避免分屏/台前调度把手柄区切成窄条，
+        # 那样控件位置会随窗口尺寸漂移，用户调好的布局就白调了。
+        UIRequiresFullScreen: true
         # 刻意不声明 UIBackgroundModes：本应用必须前台常亮，后台模式无用；
         # 免费 Apple ID 侧载时某些后台模式会触发 entitlement 校验，导致应用点开即退。
         # 此结论来自并行项目 PocketTrackpad v0.0.2 的真机闪退修复。

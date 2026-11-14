@@ -1,7 +1,14 @@
 import SwiftUI
 
-/// 横屏虚拟手柄主界面。所有主要控件的位置与大小由 PadLayout 驱动，
-/// 进入编辑态后可在屏幕上拖动改变位置、用滑块改变大小，退出时自动保存。
+/// 横屏虚拟手柄主界面。所有主要控件的位置与大小由 PadLayout 驱动。
+///
+/// 布局编辑态的交互约定（v0.0.6 重写）：
+///   - 轻点控件即选中：拖拽手势用 minimumDistance 0，指尖落下就完成选中，
+///     不再需要「先精准点中、再拖动」；
+///   - 拖动控件改位置，双指捏合改大小；
+///   - 底部面板提供按名称选择控件的胶囊条，以及 X / Y / 大小三条滑块与步进按钮，
+///     每一个按钮都能被单独调整；
+///   - 任何改动即时写入设置并持久化，离开编辑态不会丢。
 struct GamepadView: View {
     @EnvironmentObject private var pad: PadState
     @EnvironmentObject private var settings: SettingsStore
@@ -9,35 +16,56 @@ struct GamepadView: View {
 
     @State private var dpadDX = 0
     @State private var dpadDY = 0
-    /// 编辑态下的草稿布局，退出时写回 settings.layout。
+    /// 编辑态草稿。改动先写这里，提交时同步到 settings.layout。
     @State private var draft: PadLayout = .default
-    /// 当前选中的控件（编辑态下用于底部大小滑块）。
+    /// 进入编辑态时的快照，供「取消」回滚。
+    @State private var snapshot: PadLayout = .default
+    /// 当前选中的控件（编辑态下决定底部面板调谁）。
     @State private var selected: ControlID? = nil
 
     private var profile: ControllerProfile { settings.profile }
     private var editing: Bool { settings.isEditingLayout }
 
+    /// 拖拽用的命名坐标系。它固定在手柄区上，不随控件移动，
+    /// 因此拖动过程中位移不会被自身移动反复放大。
+    private static let areaSpace = "waterpad.area"
+
     var body: some View {
         GeometryReader { geo in
             let area = geo.size
-            let layout = editing ? draft : settings.layout
             ZStack {
                 ForEach(ControlID.allCases) { id in
-                    layoutHandle(for: id, layout: layout, area: area)
+                    layoutHandle(for: id, area: area)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onChange(of: settings.isEditingLayout) { _ in
-                if settings.isEditingLayout {
+            .coordinateSpace(name: Self.areaSpace)
+            .onChange(of: settings.isEditingLayout) { newValue in
+                if newValue {
+                    snapshot = settings.layout
                     draft = settings.layout
                     selected = nil
                 } else {
+                    commit()
                     selected = nil
                 }
             }
             .overlay(alignment: .bottom) {
                 if editing {
-                    editPanel(area: area)
+                    LayoutEditorPanel(
+                        layout: $draft,
+                        selected: $selected,
+                        onResetAll: { draft = .default },
+                        onCancel: {
+                            draft = snapshot
+                            settings.isEditingLayout = false
+                        },
+                        onDone: {
+                            commit()
+                            settings.isEditingLayout = false
+                        },
+                        onChange: { commit() }
+                    )
                 }
             }
         }
@@ -45,21 +73,25 @@ struct GamepadView: View {
 
     // MARK: - 定位与编辑包装
 
-    private func layoutHandle(for id: ControlID, layout: PadLayout, area: CGSize) -> some View {
+    private func layoutHandle(for id: ControlID, area: CGSize) -> some View {
         LayoutControl(
             item: binding(for: id),
             areaSize: area,
             baseSize: id.baseSize,
             editing: editing,
+            isSelected: selected == id,
+            displayName: id.displayName,
+            areaSpace: Self.areaSpace,
             onSelect: { selected = id },
+            onCommit: { commit() },
             content: { controlContent(for: id) }
         )
     }
 
     /// 返回一个可写回 draft 或 settings.layout 的绑定，绕开 @State 值类型直接赋值的坑。
     private func binding(for id: ControlID) -> Binding<LayoutItem> {
-        editing
-            ? Binding(
+        if editing {
+            return Binding(
                 get: { draft[id] },
                 set: { nv in
                     var copy = draft
@@ -67,14 +99,28 @@ struct GamepadView: View {
                     draft = copy
                 }
             )
-            : Binding(
-                get: { settings.layout[id] },
-                set: { nv in
-                    var copy = settings.layout
-                    copy[id] = nv
-                    settings.layout = copy
-                }
-            )
+        }
+        return Binding(
+            get: { settings.layout[id] },
+            set: { nv in
+                var copy = settings.layout
+                copy[id] = nv
+                settings.layout = copy
+            }
+        )
+    }
+
+    /// 把草稿写回设置并持久化。每次拖动/微调结束都会调用。
+    private func commit() {
+        var copy = draft
+        for id in ControlID.allCases {
+            var item = copy[id]
+            item.clamp()
+            copy[id] = item
+        }
+        draft = copy
+        settings.layout = copy
+        settings.persistLayout()
     }
 
     // MARK: - 控件内容
@@ -149,7 +195,7 @@ struct GamepadView: View {
             label: profile.label(for: button),
             isPressed: isPressed(button),
             onChange: { press(button, $0) },
-            diameter: 42 * scale,
+            diameter: 46 * scale,
             fontSize: 15 * scale
         )
     }
@@ -171,136 +217,127 @@ struct GamepadView: View {
         default: return ("LB", "RB", "LT", "RT")
         }
     }
-
-    // MARK: - 编辑面板
-
-    @ViewBuilder
-    private func editPanel(area: CGSize) -> some View {
-        VStack(spacing: 6) {
-            HStack {
-                Button("重置布局") {
-                    draft = .default
-                    selected = nil
-                }
-                .font(.caption)
-                Spacer()
-                if let sel = selected {
-                    Text(controlName(sel))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                Button("完成") {
-                    var copy = settings.layout
-                    copy = draft
-                    settings.layout = copy
-                    settings.persistLayout()
-                    settings.isEditingLayout = false
-                }
-                .font(.caption.bold())
-            }
-            .padding(.horizontal, 4)
-            if let sel = selected {
-                HStack {
-                    Text("大小")
-                        .font(.caption)
-                    Slider(
-                        value: Binding(
-                            get: { draft[sel].scale },
-                            set: { nv in
-                                var copy = draft
-                                copy[sel].scale = nv
-                                draft = copy
-                            }
-                        ),
-                        in: 0.5...2.0
-                    )
-                    Text("\(Int(draft[sel].scale * 100))%")
-                        .font(.caption.monospacedDigit())
-                        .foregroundColor(.secondary)
-                        .frame(width: 36, alignment: .trailing)
-                }
-                .padding(.horizontal, 4)
-            }
-            Text("拖动按钮调整位置，选中后拖动滑块调整大小")
-                .font(.caption2)
-                .foregroundColor(.secondary)
-        }
-        .padding(10)
-        .background(.regularMaterial)
-        .cornerRadius(14)
-        .padding(.horizontal, 8)
-        .padding(.bottom, 6)
-    }
-
-    private func controlName(_ id: ControlID) -> String {
-        switch id {
-        case .leftStick: return "左摇杆"
-        case .rightStick: return "右摇杆"
-        case .dpad: return "十字键"
-        case .faceNorth: return "面键·上"
-        case .faceEast: return "面键·右"
-        case .faceSouth: return "面键·下"
-        case .faceWest: return "面键·左"
-        case .leftShoulder: return shoulderLabels.left
-        case .rightShoulder: return shoulderLabels.right
-        case .leftTriggerClick: return shoulderLabels.leftTrigger
-        case .rightTriggerClick: return shoulderLabels.rightTrigger
-        case .back: return "Back"
-        case .start: return "Start"
-        case .guide: return "Home"
-        case .leftStickClick: return "L3"
-        case .rightStickClick: return "R3"
-        case .capture: return "Share"
-        }
-    }
 }
 
-/// 单个控件的定位与编辑包装。非编辑态正常响应内部手势；
-/// 编辑态关闭内部命中测试，改用外层拖拽移动，并显示定位高亮框。
+/// 单个控件的定位与编辑包装。
+///
+/// 非编辑态：控件自身的手势生效（按压、摇杆、十字键）。
+/// 编辑态：控件本体停止命中测试，由外层统一接管
+///   - 轻点选中（minimumDistance 0，指尖落下即选中）；
+///   - 拖动改位置；
+///   - 双指捏合改大小。
 private struct LayoutControl<Content: View>: View {
     @Binding var item: LayoutItem
     let areaSize: CGSize
     let baseSize: CGFloat
     let editing: Bool
+    let isSelected: Bool
+    let displayName: String
+    let areaSpace: String
     let onSelect: () -> Void
+    let onCommit: () -> Void
     @ViewBuilder let content: () -> Content
 
-    @State private var dragStart: CGPoint?
+    @State private var dragStartX: Double? = nil
+    @State private var dragStartY: Double? = nil
+    @State private var pinchBase: Double? = nil
+
+    private var side: CGFloat { baseSize * item.scale }
 
     var body: some View {
         content()
             .allowsHitTesting(!editing)
-            .frame(width: baseSize * item.scale, height: baseSize * item.scale)
+            .frame(width: side, height: side)
+            .contentShape(Rectangle())
+            .overlay(highlight)
+            .overlay(alignment: .top) { badge }
+            .overlay { hitArea }
             .position(x: item.x * areaSize.width, y: item.y * areaSize.height)
-            .overlay(editHighlight)
             .gesture(editing ? dragGesture : nil)
+            .simultaneousGesture(editing ? pinchGesture : nil)
+    }
+
+    /// 编辑态下的透明命中层。比控件本体略大，方便手指抓取。
+    @ViewBuilder
+    private var hitArea: some View {
+        if editing {
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(width: side + 16, height: side + 16)
+        }
+    }
+
+    @ViewBuilder
+    private var highlight: some View {
+        if editing {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.accentColor.opacity(isSelected ? 0.16 : 0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(
+                            Color.accentColor.opacity(isSelected ? 0.95 : 0.40),
+                            style: StrokeStyle(lineWidth: isSelected ? 2.5 : 1, dash: isSelected ? [] : [5, 4])
+                        )
+                )
+                .frame(width: side + 18, height: side + 18)
+        }
+    }
+
+    @ViewBuilder
+    private var badge: some View {
+        if editing && isSelected {
+            Text(displayName)
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Color.accentColor)
+                .foregroundColor(.white)
+                .clipShape(Capsule())
+                .offset(y: -side / 2 - 12)
+        }
     }
 
     private var dragGesture: AnyGesture<DragGesture.Value> {
         AnyGesture(
-            DragGesture()
+            DragGesture(minimumDistance: 0, coordinateSpace: .named(areaSpace))
                 .onChanged { value in
-                    if dragStart == nil {
-                        dragStart = CGPoint(x: item.x, y: item.y)
+                    if dragStartX == nil || dragStartY == nil {
+                        dragStartX = item.x
+                        dragStartY = item.y
                         onSelect()
                     }
-                    guard let start = dragStart else { return }
-                    let nx = start.x + Double(value.translation.width) / Double(areaSize.width)
-                    let ny = start.y + Double(value.translation.height) / Double(areaSize.height)
-                    item.x = min(1, max(0, nx))
-                    item.y = min(1, max(0, ny))
+                    guard let startX = dragStartX, let startY = dragStartY else { return }
+                    let width = max(1, Double(areaSize.width))
+                    let height = max(1, Double(areaSize.height))
+                    var updated = item
+                    updated.x = min(1, max(0, startX + Double(value.translation.width) / width))
+                    updated.y = min(1, max(0, startY + Double(value.translation.height) / height))
+                    item = updated
                 }
-                .onEnded { _ in dragStart = nil }
+                .onEnded { _ in
+                    dragStartX = nil
+                    dragStartY = nil
+                    onCommit()
+                }
         )
     }
 
-    @ViewBuilder
-    private var editHighlight: some View {
-        if editing {
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.white.opacity(0.55), lineWidth: 1.5)
-                .frame(width: baseSize * item.scale + 10, height: baseSize * item.scale + 10)
-        }
+    private var pinchGesture: AnyGesture<CGFloat> {
+        AnyGesture(
+            MagnificationGesture()
+                .onChanged { value in
+                    if pinchBase == nil {
+                        pinchBase = item.scale
+                    }
+                    let base = pinchBase ?? 1
+                    var updated = item
+                    updated.scale = min(2.0, max(0.5, base * Double(value)))
+                    item = updated
+                }
+                .onEnded { _ in
+                    pinchBase = nil
+                    onCommit()
+                }
+        )
     }
 }

@@ -490,6 +490,61 @@ def main():
     check("iOS 不向 App 开放广播包的 GAP Appearance" in settings_src,
           "设置页如实写明 Windows/安卓发现层的系统级硬限制")
 
+    # ---------- 布局编辑：每个按钮都要能调位置与大小（v0.0.6） ----------
+    gamepad_src = read("Views/GamepadView.swift")
+    panel_src = read("Views/LayoutEditorPanel.swift")
+    layout_src = read("State/PadLayout.swift")
+    content_src2 = read("Views/ContentView.swift")
+
+    check("DragGesture(minimumDistance: 0" in gamepad_src,
+          "拖拽手势 minimumDistance 为 0（轻点即选中，不需先精准命中按钮）")
+    check("MagnificationGesture()" in gamepad_src,
+          "支持双指捏合调整控件大小")
+    check("coordinateSpace(name:" in gamepad_src,
+          "拖动使用命名坐标系，控件自身移动不会放大位移")
+    check("Color.clear" in gamepad_src and "contentShape(Rectangle())" in gamepad_src,
+          "编辑态有放大的透明命中层，手指容易抓住控件")
+    check("isSelected" in gamepad_src and "displayName" in gamepad_src,
+          "选中控件带高亮框与名称标签")
+    check("persistLayout()" in gamepad_src,
+          "布局改动即时写入 UserDefaults")
+
+    check("ForEach(ControlID.allCases)" in panel_src,
+          "面板列出全部控件，可按名称直接选中")
+    check(panel_src.count("Slider(") >= 3,
+          "面板提供 X、Y、大小三条滑块",
+          f"{panel_src.count('Slider(')} 条")
+    check("nudge(" in panel_src and "setScale(" in panel_src,
+          "面板提供位置与大小的步进微调按钮")
+    check("onCancel" in panel_src and "onResetAll" in panel_src,
+          "面板提供取消与重置，避免误改无法回退")
+
+    check("var displayName: String" in layout_src,
+          "每个控件有中文名，选择器按名字索引")
+    check("PadLayout.default[id]" in layout_src,
+          "布局缺项回退到默认位置，不再落到屏幕中央叠压")
+    default_block = re.search(r"static let `default`.*?\n    \}\(\)", layout_src, re.S)
+    default_count = len(re.findall(r"put\(\.", default_block.group(0))) if default_block else 0
+    check(default_count == 17,
+          "默认布局覆盖全部 17 个控件",
+          f"{default_count} 个")
+    all_cases: list[str] = []
+    for group in re.findall(r"case ([a-zA-Z, ]+)", layout_src.split("var id: String")[0]):
+        all_cases.extend(name.strip() for name in group.split(",") if name.strip())
+    check(len(all_cases) == 17 and default_count == len(set(all_cases)),
+          "控件数量与默认项一一对应",
+          f"{len(set(all_cases))} 个控件 / {default_count} 个默认项")
+
+    project_family = re.search(r"TARGETED_DEVICE_FAMILY:\s*\"([^\"]+)\"",
+                                (ROOT / "project.yml").read_text(encoding="utf-8"))
+    check(project_family is not None and "2" in project_family.group(1),
+          "同时支持 iPad（只写 1 时 App 在 iPad 上跑成 iPhone 兼容小窗口）",
+          project_family.group(1) if project_family else "未声明")
+    check("UIRequiresFullScreen: true" in (ROOT / "project.yml").read_text(encoding="utf-8"),
+          "iPad 锁定全屏，避免分屏把手柄区切窄导致布局漂移")
+    check("结束编辑" in content_src2 and "布局" in content_src2,
+          "状态栏常驻布局入口，编辑态可一键结束")
+
     # ---------- 结论 ----------
     print("\n" + "=" * 62)
     if ISSUES:

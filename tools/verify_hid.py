@@ -570,8 +570,10 @@ def main():
     for callback in ("registerCentral(request.central)", "registerCentral(central)"):
         check(callback in control_point_src,
               f"读/写/订阅回调里登记主机（{callback}）")
-    check("dropDisconnectedCentrals" in control_point_src and "$0.state == .connected" in control_point_src,
-          "用 central.state 轮询发现掉线")
+    check("dropDisconnectedCentrals" not in control_point_src,
+          "不使用 central.state 判定掉线（CBCentral 没有 state 属性）")
+    check("主机退订输入报告，判定链路已断" in control_point_src,
+          "用退订输入报告判定链路断开")
     check("didConnect central:" not in control_point_src,
           "不再声明外设侧连接回调（参数同名会与协议可选方法冲突，编译失败）")
     check("connectedCentrals.count" in control_point_src,

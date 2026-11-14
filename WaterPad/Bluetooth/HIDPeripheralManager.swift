@@ -303,7 +303,6 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     }
 
     private func sendLatestReport() {
-        dropDisconnectedCentrals()
         guard let set = serviceSet,
               !suspendedByHost,
               let manager else { return }
@@ -339,26 +338,6 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                 onSubscribedCentrals: motionCentrals
             )
         }
-    }
-
-    /// 用 central.state 清理已断开的主机。
-    /// 外设侧不一定有断开回调，靠状态轮询最稳。
-    private func dropDisconnectedCentrals() {
-        guard !connectedCentrals.isEmpty else { return }
-        let alive = connectedCentrals.filter { $0.state == .connected }
-        guard alive.count != connectedCentrals.count else { return }
-        for central in connectedCentrals where central.state != .connected {
-            subscribedCentrals.removeAll { $0 === central }
-            motionCentrals.removeAll { $0 === central }
-            controlPointCentrals.removeAll { $0 === central }
-        }
-        connectedCentrals = alive
-        log.add("主机断开链路，当前已连接 \(alive.count) 台")
-        DispatchQueue.main.async {
-            self.hostConnectionText = alive.isEmpty ? "已断开" : "已连接 \(alive.count) 台"
-            self.hostSubscribedInput = false
-        }
-        publishConnectedCount()
     }
 
     // MARK: - CBPeripheralManagerDelegate
@@ -477,7 +456,7 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     // 订阅与退订，连接成立与否要从主机读特征、写控制点这些回调里拿到 central。
     // 以前这些 central 全被丢掉，界面上的「已连接 0 台」其实分不清
     // 「主机根本没连」和「连上了但没订阅报告」这两种完全不同的故障。
-    // 现在统一由 registerCentral 登记，掉线靠 central.state 轮询发现。
+    // 现在统一由 registerCentral 登记，掉线靠「主机退订输入报告」来判定。
 
     /// 记录已建立链路的主机。
     ///
@@ -534,10 +513,17 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                            central: CBCentral,
                            didUnsubscribeFrom characteristic: CBCharacteristic) {
         guard let set = serviceSet else { return }
-        registerCentral(central)
+        var linkClosed = false
         if characteristic === set.inputReportCharacteristic {
             subscribedCentrals.removeAll { $0 === central }
-            DispatchQueue.main.async { self.hostSubscribedInput = false }
+            // 主机退订输入报告，基本意味着链路已经断开。
+            // 外设侧没有断开回调，这是不依赖不确定接口的判定方式。
+            connectedCentrals.removeAll { $0 === central }
+            linkClosed = true
+            DispatchQueue.main.async {
+                self.hostSubscribedInput = false
+                if linkClosed { self.hostConnectionText = "已断开" }
+            }
         } else if let motion = set.motionReportCharacteristic, characteristic === motion {
             motionCentrals.removeAll { $0 === central }
         } else if characteristic === set.hidControlPointCharacteristic {
@@ -545,7 +531,9 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         } else {
             return
         }
-        log.add("主机取消订阅，当前已连接 \(connectedCentrals.count) 台")
+        log.add(linkClosed
+                ? "主机退订输入报告，判定链路已断"
+                : "主机取消订阅，当前已连接 \(connectedCentrals.count) 台")
         publishConnectedCount()
     }
 

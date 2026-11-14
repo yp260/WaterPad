@@ -105,16 +105,17 @@ enum HIDServiceBuilder {
         // 精简描述符模式下整个特征都不注册，免得主机看到有报告编号却找不到对应描述。
         var motionReport: CBMutableCharacteristic?
         if includeMotion {
-            let characteristic = characteristic(
+            // 局部名不能叫 characteristic，会遮蔽同名的构造方法导致编译失败
+            let motionCharacteristic = characteristic(
                 SIGUUID.hidReport,
                 properties: [.read, .notify],
                 permissions: [.readable, .readEncryptionRequired]
             )
-            characteristic.descriptors = [
+            motionCharacteristic.descriptors = [
                 CBMutableDescriptor(type: SIGUUID.full(SIGUUID.reportReference),
                                     value: HIDSpec.motionReportReference)
             ]
-            motionReport = characteristic
+            motionReport = motionCharacteristic
         }
 
         var hidCharacteristics: [CBMutableCharacteristic] = [

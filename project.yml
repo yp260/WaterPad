@@ -3,20 +3,25 @@ options:
   bundleIdPrefix: com.water
   deploymentTarget:
     iOS: "16.0"
-  xcodeVersion: "15.0"
   createIntermediateGroups: true
 settings:
   base:
-    SWIFT_VERSION: "5.9"
+    # SWIFT_VERSION 只接受语言模式（4.0/4.2/5.0/6.0），5.9 会导致 xcodebuild 报错
+    SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "1"
-    SUPPORTS_MACCATALYST: false
+    SUPPORTS_MACCATALYST: "NO"
 targets:
   WaterPad:
     type: application
     platform: iOS
     sources:
       - path: WaterPad
+        excludes:
+          - "Info.plist"
+    # xcodegen 的 info 块必须给 path，由 xcodegen 生成 Info.plist 并自动设置
+    # INFOPLIST_FILE；properties 里的键会写进生成的 plist。
     info:
+      path: WaterPad/Info.plist
       properties:
         CFBundleDisplayName: WaterPad
         CFBundleShortVersionString: "1.0"

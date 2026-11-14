@@ -11,3 +11,4 @@ xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
 WaterPad.xcodeproj/
+WaterPad/Info.plist

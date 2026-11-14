@@ -1,0 +1,13 @@
+* text=auto
+
+# macOS runner 上的 shell 脚本与 workflow 必须保持 LF，CRLF 会让 bash 直接报错
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.swift text eol=lf
+*.plist text eol=lf
+*.md   text eol=lf
+*.html text eol=lf
+
+# Windows 上的脚本用 CRLF，PowerShell 5.1 读取更稳
+*.ps1  text eol=crlf

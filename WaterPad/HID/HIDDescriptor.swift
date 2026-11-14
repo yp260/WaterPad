@@ -42,6 +42,7 @@ enum SIGUUID {
     static let hidService: UInt16          = 0x1812
     static let deviceInformationService: UInt16 = 0x180A
     static let batteryService: UInt16      = 0x180F
+    static let genericAccessService: UInt16 = 0x1800
 
     static let hidInformation: UInt16      = 0x2A4A
     static let reportMap: UInt16           = 0x2A4B
@@ -49,6 +50,7 @@ enum SIGUUID {
     static let hidReport: UInt16           = 0x2A4D
     static let protocolMode: UInt16        = 0x2A4E
     static let reportReference: UInt16     = 0x2908
+    static let appearance: UInt16          = 0x2A01
 
     static let batteryLevel: UInt16        = 0x2A19
     static let manufacturerName: UInt16    = 0x2A29
@@ -79,6 +81,55 @@ struct HIDDescriptorAnalysis {
             .map { "ID \($0): \(outputBitsByReport[$0] ?? 0) 位" }
             .joined(separator: "，")
         return "描述符 \(byteCount) 字节 / \(itemCount) 项；输入报告 [\(inputs)]；输出报告 [\(outputs)]；集合深度归零：\(collectionDepth == 0)"
+    }
+}
+
+// MARK: - GAP 设备类别
+
+/// GATT 的 0x1800 / 0x2A01 Appearance 取值。
+///
+/// 重要边界：iOS 的 `CBPeripheralManager.startAdvertising` 不开放 Appearance AD Type，
+/// 无法在**广播包**里声明设备类别；系统蓝牙设置（尤其 Windows 与多数安卓机）
+/// 依赖该字段过滤设备。这里在 GATT 里补一个 0x1800 服务，属于尽力而为：
+/// 部分主机会在绑定阶段读取 2A01，也可能被 iOS 整机共享外设的直接忽略。
+/// 并行项目 PocketTrackpad 已在真机上确认 Windows 侧因此搜不到设备，
+/// 并改走 ESP32 硬件桥；本枚举只用于快速试验不同主机认哪一类，不承诺能突破限制。
+enum HIDAppearance: String, CaseIterable, Identifiable {
+    case gamepad
+    case joystick
+    case genericHID
+    case mouse
+    case keyboard
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .gamepad: return "游戏手柄 0x03C4"
+        case .joystick: return "摇杆 0x03C3"
+        case .genericHID: return "通用 HID 0x03C0"
+        case .mouse: return "鼠标 0x03C2（iPad 已验证类别）"
+        case .keyboard: return "键盘 0x03C1"
+        }
+    }
+
+    /// GAP Appearance 编号，小端两字节写入 2A01。
+    var code: UInt16 {
+        switch self {
+        case .gamepad: return 0x03C4
+        case .joystick: return 0x03C3
+        case .genericHID: return 0x03C0
+        case .mouse: return 0x03C2
+        case .keyboard: return 0x03C1
+        }
+    }
+
+    var data: Data {
+        Data([UInt8(code & 0x00FF), UInt8(code >> 8)])
+    }
+
+    static func withID(_ id: String) -> HIDAppearance {
+        HIDAppearance(rawValue: id) ?? .gamepad
     }
 }
 

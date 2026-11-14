@@ -109,10 +109,13 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         let includePrefix = settings.includeReportIDPrefix
         let name = settings.advertisedName
         let interval = settings.reportInterval
+        let appearance = settings.appearance.data
+        let hidOnly = settings.advertiseHIDOnly
         bleQueue.async { [weak self] in
             guard let self, self.manager?.state == .poweredOn else { return }
             self.rebuild(profile: profile, spoof: spoof, attemptShort: attemptShort,
-                         includePrefix: includePrefix, name: name, interval: interval)
+                         includePrefix: includePrefix, name: name, interval: interval,
+                         appearance: appearance, hidOnly: hidOnly)
         }
     }
 
@@ -166,7 +169,9 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                          attemptShort: Bool,
                          includePrefix: Bool,
                          name: String,
-                         interval: TimeInterval) {
+                         interval: TimeInterval,
+                         appearance: Data,
+                         hidOnly: Bool) {
         manager?.stopAdvertising()
         manager?.removeAllServices()
         subscribedCentrals.removeAll()
@@ -182,7 +187,8 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         let set = HIDServiceBuilder.build(
             profile: profile,
             spoofIdentity: spoof,
-            useFullHIDUUID: usingFullUUID
+            useFullHIDUUID: usingFullUUID,
+            appearance: appearance
         )
         serviceSet = set
 
@@ -202,16 +208,20 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         currentProfile = profile
         currentSpoofIdentity = spoof
         currentIncludeReportIDPrefix = includePrefix
+        currentAppearance = appearance
+        currentAdvertiseHIDOnly = hidOnly
         log.add("添加 \(pendingAddCount) 个 GATT 服务，HID 服务编号形式：\(set.uuidFormatDescription)")
         for service in set.allServices { manager?.add(service) }
     }
 
-    private var currentAdvertisedName = "WaterPad"
+    private var currentAdvertisedName = "WP-Pad"
     private var currentInterval: TimeInterval = 1.0 / 60
     /// 当前生效配置的队列内副本，回调里不直接读取被界面修改的设置对象。
     private var currentProfile: ControllerProfile = .generic
     private var currentSpoofIdentity = false
     private var currentIncludeReportIDPrefix = false
+    private var currentAppearance = HIDAppearance.gamepad.data
+    private var currentAdvertiseHIDOnly = false
     /// 16 位广播被系统拒绝时才切到 true，日志会明确提示主机大概率发现不了。
     private var advertisingUsesFullUUIDs = false
 
@@ -222,12 +232,17 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             ? [SIGUUID.full(SIGUUID.hidService),
                SIGUUID.full(SIGUUID.deviceInformationService),
                SIGUUID.full(SIGUUID.batteryService)]
-            : set.advertisedUUIDs
+            : (currentAdvertiseHIDOnly
+               ? [SIGUUID.short(SIGUUID.hidService)]
+               : set.advertisedUUIDs)
         let advertisement: [String: Any] = [
             CBAdvertisementDataLocalNameKey: currentAdvertisedName,
             CBAdvertisementDataServiceUUIDsKey: uuids
         ]
-        log.add("请求广播，设备名称：\(currentAdvertisedName)，服务编号：\(fullUUIDs ? "完整 128 位（回退）" : "标准 16 位")")
+        // 31 字节广播预算估算：Flags 3 字节 + 名称 2+n + 16 位服务列表 2+2n。
+        let budget = 3 + 2 + currentAdvertisedName.utf8.count + 2 + uuids.count * 2
+        log.add("请求广播：名称 \(currentAdvertisedName)，\(uuids.count) 个服务编号，估算占用 \(budget)/31 字节\(currentAdvertiseHIDOnly ? "（极简模式）" : "")")
+        log.add("服务编号：\(fullUUIDs ? "完整 128 位（回退）" : "标准 16 位 1812" + (currentAdvertiseHIDOnly ? "" : " / 180F / 180A"))；GATT Appearance：\(currentAppearance.map { String(format: "%02X", $0) }.joined())")
         manager.startAdvertising(advertisement)
         restartSendLoop(interval: currentInterval)
     }
@@ -301,8 +316,11 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             let includePrefix = settings.includeReportIDPrefix
             let name = settings.advertisedName
             let interval = settings.reportInterval
+            let appearance = settings.appearance.data
+            let hidOnly = settings.advertiseHIDOnly
             rebuild(profile: profile, spoof: spoof, attemptShort: attemptShort,
-                    includePrefix: includePrefix, name: name, interval: interval)
+                    includePrefix: includePrefix, name: name, interval: interval,
+                    appearance: appearance, hidOnly: hidOnly)
         } else {
             DispatchQueue.main.async { self.isAdvertising = false }
         }
@@ -329,7 +347,9 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                         attemptShort: false,
                         includePrefix: currentIncludeReportIDPrefix,
                         name: currentAdvertisedName,
-                        interval: currentInterval)
+                        interval: currentInterval,
+                        appearance: currentAppearance,
+                        hidOnly: currentAdvertiseHIDOnly)
                 return
             }
             if code == SIGUUID.hidService {
@@ -368,10 +388,13 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                 self.lastErrorMessage = nil
             }
             log.add("广播已开启，请在主机的系统蓝牙设置里搜索并配对")
+            log.add("主机列表显示的通常是 iPhone 整机 GAP 名称，不是 \(currentAdvertisedName)；请在列表里找手机名，配对后可重命名", level: .info)
+            log.add("排查：用 nRF Connect 扫描本 iPhone。扫得到 0x1812 说明广播正常、是主机按设备类别过滤；扫不到说明广播未真正发出", level: .info)
+            log.add("已知硬限制：iOS 不开放广播包的 GAP Appearance，Windows 与部分安卓机的蓝牙设置会因此不列出本设备；GATT 中的 0x1800/0x2A01 只是尽力而为", level: .warn)
             if advertisingUsesFullUUIDs {
                 log.add("当前为 128 位回退广播，多数主机不会把设备列进蓝牙列表", level: .warn)
             }
-            log.add("主机显示的名称可能是 iPhone 整机名称（GAP Device Name），不是广播名；可在主机侧重命名", level: .info)
+            log.add("若 iPad 之前连过同一台 iPhone，先在 iPad 蓝牙设置里「忽略此设备」再重新扫描", level: .info)
         }
     }
 

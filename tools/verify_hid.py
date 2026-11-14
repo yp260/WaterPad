@@ -417,7 +417,7 @@ def main():
     # ---------- 7. 固化并行项目的真机教训 ----------
     # 这些约束来自 G:/2026-11-14-12-53-22/PocketTrackpad 的 14 轮真机出包，
     # 每一条都对应一次真实故障（点开即退、主机搜不到、无法切换主机）。
-    print("\n[7/7] 真机教训固化检查")
+    print("\n[7/7] 真机教训固化与广播诊断检查")
     builder_src = read("Bluetooth/HIDServiceBuilder.swift")
     peripheral_src = read("Bluetooth/HIDPeripheralManager.swift")
     content_src = read("Views/ContentView.swift")
@@ -466,6 +466,29 @@ def main():
 
     check("Mac 与 iPad 实测不会发现" not in (settings_src + peripheral_src + descriptor_src),
           "不再把 iPad 写成无条件硬墙（同链路鼠标类别已真机配对成功）")
+
+    # ---------- 三平台搜不到之后的诊断增强（v0.0.5） ----------
+    log_view_src = read("Views/LogView.swift")
+    settings_store_src = read("State/SettingsStore.swift")
+    check("SIGUUID.full(SIGUUID.genericAccessService)" in gatt_text
+          and "SIGUUID.appearance: appearance" in gatt_text,
+          "GATT 补齐 0x1800 GAP 服务与 0x2A01 Appearance 读值")
+    check("case gamepad" in descriptor_src and "case joystick" in descriptor_src
+          and "case genericHID" in descriptor_src,
+          "Appearance 类别可切换（手柄/摇杆/通用 HID）")
+    check("return 0x03C4" in descriptor_src and "return 0x03C3" in descriptor_src
+          and "return 0x03C0" in descriptor_src,
+          "GAP Appearance 编号符合 HID 用法表")
+    check('"WP-Pad"' in settings_store_src,
+          "广播名压到 6 字符，与真机配对成功的 PT-Pad 同长度")
+    check("currentAdvertiseHIDOnly" in peripheral_src and "advertiseHIDOnly" in settings_store_src,
+          "提供「广播只放 0x1812」极简模式排查开关")
+    check("nRF Connect" in peripheral_src and "31 字节" in peripheral_src,
+          "广播日志含 nRF Connect 判据与 31 字节预算估算")
+    check("UIPasteboard.general.string" in log_view_src,
+          "日志页支持一键复制全部日志供真机排查")
+    check("iOS 不向 App 开放广播包的 GAP Appearance" in settings_src,
+          "设置页如实写明 Windows/安卓发现层的系统级硬限制")
 
     # ---------- 结论 ----------
     print("\n" + "=" * 62)

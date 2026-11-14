@@ -15,6 +15,8 @@ final class SettingsStore: ObservableObject {
         static let rumbleEnabled = "waterpad.rumbleEnabled"
         static let rumbleIntensity = "waterpad.rumbleIntensity"
         static let motionEnabled = "waterpad.motionEnabled"
+        static let appearanceID = "waterpad.appearanceID"
+        static let advertiseHIDOnly = "waterpad.advertiseHIDOnly"
         static let layout = "waterpad.layout"
     }
 
@@ -33,6 +35,10 @@ final class SettingsStore: ObservableObject {
     @Published var rumbleIntensity: Double { didSet { defaults.set(rumbleIntensity, forKey: Key.rumbleIntensity) } }
     /// 陀螺仪与加速度采集开关。只影响采集与发送内容，不改变 GATT 结构，无需重建服务。
     @Published var motionEnabled: Bool { didSet { defaults.set(motionEnabled, forKey: Key.motionEnabled) } }
+    /// GATT 中 0x2A01 Appearance 声明的设备类别，改动需重建 GATT 服务。
+    @Published var appearanceID: String { didSet { defaults.set(appearanceID, forKey: Key.appearanceID); rebuildToken += 1 } }
+    /// 排查开关：广播包只放 0x1812，尽量留足 31 字节预算。
+    @Published var advertiseHIDOnly: Bool { didSet { defaults.set(advertiseHIDOnly, forKey: Key.advertiseHIDOnly); rebuildToken += 1 } }
 
     /// 手柄控件布局（位置与缩放），可编辑并持久化。
     @Published var layout: PadLayout = .default
@@ -59,6 +65,8 @@ final class SettingsStore: ObservableObject {
         rumbleEnabled = stored.object(forKey: Key.rumbleEnabled) as? Bool ?? true
         rumbleIntensity = stored.object(forKey: Key.rumbleIntensity) as? Double ?? 0.70
         motionEnabled = stored.object(forKey: Key.motionEnabled) as? Bool ?? true
+        appearanceID = stored.string(forKey: Key.appearanceID) ?? HIDAppearance.gamepad.rawValue
+        advertiseHIDOnly = stored.object(forKey: Key.advertiseHIDOnly) as? Bool ?? false
 
         if let data = stored.data(forKey: Key.layout),
            let decoded = try? JSONDecoder().decode(PadLayout.self, from: data) {
@@ -76,8 +84,11 @@ final class SettingsStore: ObservableObject {
     var profile: ControllerProfile { .withID(profileID) }
     var reportInterval: TimeInterval { 1.0 / Double(reportFrequency) }
 
-    /// 广播用的设备名称。伪装开关默认关闭，避免触发主机侧真实厂商驱动误加载。
+    /// 广播用的设备名称。压到 6 字符，给 31 字节广播包留余量；
+    /// 与并行项目已真机配对成功的 PT-Pad 同长度。
     var advertisedName: String {
-        spoofIdentity ? profile.spoofedName : "WaterPad"
+        spoofIdentity ? profile.spoofedName : "WP-Pad"
     }
+
+    var appearance: HIDAppearance { .withID(appearanceID) }
 }

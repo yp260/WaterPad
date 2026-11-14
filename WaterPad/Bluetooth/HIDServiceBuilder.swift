@@ -42,7 +42,8 @@ enum HIDServiceBuilder {
     static func build(
         profile: ControllerProfile,
         spoofIdentity: Bool,
-        useFullHIDUUID: Bool
+        useFullHIDUUID: Bool,
+        appearance: Data
     ) -> HIDServiceSet {
         let hidServiceUUID = useFullHIDUUID
             ? SIGUUID.full(SIGUUID.hidService)
@@ -119,6 +120,17 @@ enum HIDServiceBuilder {
         let firmware = characteristic(SIGUUID.firmwareRevision, properties: [.read], permissions: [.readable])
         deviceInformationService.characteristics = [pnpID, manufacturer, model, firmware]
 
+        // MARK: Generic Access 服务（GAP Appearance）
+        // iOS 不允许 App 在广播包里写 Appearance AD Type，只能在 GATT 里补 0x1800/0x2A01。
+        // 若系统拒绝注册该服务，didAdd 会记日志但不会阻断 HID 主链路与广播。
+        let genericAccessService = CBMutableService(
+            type: SIGUUID.full(SIGUUID.genericAccessService), primary: false
+        )
+        let appearanceCharacteristic = characteristic(
+            SIGUUID.appearance, properties: [.read], permissions: [.readable]
+        )
+        genericAccessService.characteristics = [appearanceCharacteristic]
+
         // MARK: 电池服务
         let batteryService = CBMutableService(
             type: SIGUUID.full(SIGUUID.batteryService), primary: true
@@ -134,7 +146,8 @@ enum HIDServiceBuilder {
             SIGUUID.manufacturerName: Data("Water".utf8),
             SIGUUID.modelNumber: Data("WP-01".utf8),
             SIGUUID.firmwareRevision: Data("1.0.0".utf8),
-            SIGUUID.batteryLevel: Data([0x64])
+            SIGUUID.batteryLevel: Data([0x64]),
+            SIGUUID.appearance: appearance
         ]
 
         return HIDServiceSet(
@@ -146,7 +159,7 @@ enum HIDServiceBuilder {
             motionReportCharacteristic: motionReport,
             protocolModeCharacteristic: protocolMode,
             hidControlPointCharacteristic: controlPoint,
-            allServices: [hidService, deviceInformationService, batteryService],
+            allServices: [hidService, deviceInformationService, batteryService, genericAccessService],
             // 广播与 GATT 注册是两回事，必须分开处理：
             // - CBPeripheralManager.add() 会拒绝 16 位 0x1812（CBError Code 8），所以服务树用完整 128 位；
             // - 广播包必须放 16 位 SIG 编号，主机才会把设备列进系统蓝牙设置。

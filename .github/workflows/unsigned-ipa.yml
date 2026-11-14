@@ -1,0 +1,191 @@
+name: Build unsigned IPA and Release
+
+# 每次 push 到 main / master，或推送 v* 标签，都会自动：
+#   1. 在 macOS runner 上编译未签名 IPA（无需 Mac、无需 Apple 开发者账号）
+#   2. 创建 GitHub Release 并附上 IPA + SHA256SUMS
+#   3. 在 Job Summary 与 job outputs 里输出可直接复制的下载链接
+#
+# 触发方式：
+#   - git push origin main                  → tag 形如 v0.0.<run_number>-<shortsha>，标记为 pre-release
+#   - git tag v1.0.0 && git push origin v1.0.0  → 用该 tag 名，标记为正式 release
+#   - Actions 页面手动 Run workflow        → 可自定义 release_tag
+#
+# 注意：公开仓库的 macOS runner 免费；私有仓库按分钟计费（约为 Linux 的 10 倍），
+#       若不想每次 push 都跑，把下面 push.branches 两行删掉，只保留 tags 触发。
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '自定义 Release tag（留空则自动生成）'
+        required: false
+        type: string
+        default: ''
+
+# 显式声明权限。构建 job 只读，发布 job 才给 contents: write。
+permissions:
+  contents: read
+
+# 排队而不取消：保证每一次 push 都能拿到属于自己的 Release，
+# 否则连续提交时前一个构建被杀掉，那次提交就没有下载链接了。
+concurrency:
+  group: unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      ipa: ${{ steps.meta.outputs.ipa }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Resolve release metadata
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
+          else
+            TAG="v0.0.${RUN_NUMBER}-$(printf '%s' "$SHA" | cut -c1-7)"
+          fi
+          if ! printf '%s' "$TAG" | grep -qE '^[A-Za-z0-9._-]+$'; then
+            echo "::error::非法 Release tag: $TAG（只允许字母、数字、点、下划线、连字符）"
+            exit 1
+          fi
+          IPA="WaterPad-unsigned-${TAG}.ipa"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ipa=$IPA" >> "$GITHUB_OUTPUT"
+          if [ "$REF_TYPE" = "tag" ]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Release tag: $TAG"
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned IPA
+        run: bash scripts/make_unsigned_ipa.sh
+
+      - name: Verify and rename artifact
+        run: |
+          ls -lh build/WaterPad-unsigned.ipa
+          unzip -l build/WaterPad-unsigned.ipa | head -20
+          cp build/WaterPad-unsigned.ipa "build/${{ steps.meta.outputs.ipa }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WaterPad-unsigned-ipa
+          path: build/${{ steps.meta.outputs.ipa }}
+          retention-days: 14
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      asset_url: ${{ steps.link.outputs.asset_url }}
+      page_url: ${{ steps.link.outputs.page_url }}
+
+    steps:
+      - name: Download built IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: WaterPad-unsigned-ipa
+          path: dist
+
+      - name: Compute checksum
+        env:
+          IPA: ${{ needs.build.outputs.ipa }}
+        run: |
+          cd dist
+          sha256sum "$IPA" > SHA256SUMS
+          cat SHA256SUMS
+          ls -lh
+
+      - name: Create Release with IPA
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: "WaterPad ${{ needs.build.outputs.tag }}"
+          prerelease: ${{ needs.build.outputs.prerelease }}
+          generate_release_notes: false
+          body: |
+            ## 未签名 IPA 自动构建
+
+            提交：`${{ github.sha }}`
+
+            **此 IPA 未签名，不能直接安装到 iPhone。** 请用 Sideloadly / AltStore 以你自己的 Apple ID 重签后安装。
+
+            附件：
+            - `${{ needs.build.outputs.ipa }}` — 未签名 IPA
+            - `SHA256SUMS` — 校验和
+
+            注意：免费 Apple ID 签出的 App 有效期 7 天，需定期重签。
+          files: |
+            dist/${{ needs.build.outputs.ipa }}
+            dist/SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Emit download links
+        id: link
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+          IPA: ${{ needs.build.outputs.ipa }}
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+        run: |
+          ASSET_URL="${SERVER}/${REPO}/releases/download/${TAG}/${IPA}"
+          PAGE_URL="${SERVER}/${REPO}/releases/tag/${TAG}"
+          {
+            echo "## WaterPad ${TAG} 已发布"
+            echo ""
+            echo "- Release 页面：${PAGE_URL}"
+            echo "- 直接下载：[${IPA}](${ASSET_URL})"
+            echo "- 校验和：随 Release 附带的 SHA256SUMS"
+            echo ""
+            echo "> 未签名 IPA，请用 Sideloadly / AltStore 以你自己的 Apple ID 重签后安装。"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "asset_url=${ASSET_URL}" >> "$GITHUB_OUTPUT"
+          echo "page_url=${PAGE_URL}" >> "$GITHUB_OUTPUT"
+          echo "Release: ${PAGE_URL}"
+          echo "Download: ${ASSET_URL}"

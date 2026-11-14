@@ -1,0 +1,44 @@
+name: WaterPad
+options:
+  bundleIdPrefix: com.water
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "1"
+    SUPPORTS_MACCATALYST: false
+targets:
+  WaterPad:
+    type: application
+    platform: iOS
+    sources:
+      - path: WaterPad
+    info:
+      properties:
+        CFBundleDisplayName: WaterPad
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities:
+          - arm64
+          - bluetooth-le
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # 刻意不声明 UIBackgroundModes：本应用必须前台常亮，后台模式无用；
+        # 免费 Apple ID 侧载时某些后台模式会触发 entitlement 校验，导致应用点开即退。
+        # 此结论来自并行项目 PocketTrackpad v0.0.2 的真机闪退修复。
+        NSBluetoothAlwaysUsageDescription: "需要蓝牙权限，才能把虚拟手柄输入发送给主机"
+        NSBluetoothPeripheralUsageDescription: "需要蓝牙权限，才能把虚拟手柄输入发送给主机"
+        ITSAppUsesNonExemptEncryption: false
+        UIViewControllerBasedStatusBarAppearance: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.water.WaterPad
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO

@@ -1,0 +1,13 @@
+build/
+DerivedData/
+*.ipa
+*.xcarchive
+*.xcarchive.zip
+.DS_Store
+# 本地临时凭据文件，绝不能提交
+.gh_token
+*token*.txt
+xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+WaterPad.xcodeproj/

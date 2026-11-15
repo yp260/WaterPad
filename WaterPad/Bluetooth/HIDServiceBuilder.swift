@@ -71,12 +71,13 @@ enum HIDServiceBuilder {
             properties: [.read, .writeWithoutResponse],
             permissions: [.readable, .writeable]
         )
-        // HID Control Point（0x2A4C）：主机写 Suspend / Resume，设备必须用通知回送
-        // 接受响应（0x03 / 0x04）。缺了 .notify 就无法回包，主机会在建立 HID 连接
-        // 阶段一直等不到响应，表现为「能搜到、连上又断」。
+        // HID Control Point（0x2A4C）：按 HID over GATT Profile 规范，只写无响应。
+        // 规范里控制点只有 Write Without Response 属性，没有 Notify，主机写入 Suspend /
+        // Resume 后不期待任何回包（0x03 / 0x04 那种接受响应是 USB HID 设备类定义，
+        // 不属于 BLE HOGP）。早期版本误加了 .notify 并回声，反而可能让合规主机卡等。
         let controlPoint = characteristic(
             SIGUUID.hidControlPoint,
-            properties: [.writeWithoutResponse, .notify],
+            properties: [.writeWithoutResponse],
             permissions: [.writeable]
         )
 

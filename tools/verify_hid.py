@@ -551,19 +551,20 @@ def main():
     control_point_src = read("Bluetooth/HIDPeripheralManager.swift")
     builder_src2 = read("Bluetooth/HIDServiceBuilder.swift")
 
-    check(".writeWithoutResponse, .notify" in builder_src2,
-          "HID 控制点带 Notify 属性（用于回声响应，兼容会等响应的主机）")
+    check(".writeWithoutResponse, .notify" not in builder_src2
+          and "properties: [.writeWithoutResponse]" in builder_src2,
+          "HID 控制点只写无响应（HID over GATT 规范，不挂 Notify，主机不期待回包）")
     for name, value in (("suspend", "0x00"), ("exitSuspend", "0x01")):
         check(f"static let {name}: UInt8 = {value}" in descriptor_src,
               f"控制点指令 {name} = {value}（蓝牙 SIG Assigned Numbers 口径）")
     check("static let legacySuspend: UInt8 = 0x01" in descriptor_src
           and "static let legacyExitSuspend: UInt8 = 0x02" in descriptor_src,
           "兼容另一套流传口径的操作码常量")
-    check("sendControlPointResponse" in control_point_src
-          and "HIDControlPoint.suspend" in control_point_src,
-          "收到挂起指令后回送响应")
-    check("pendingControlPointResponse" in control_point_src,
-          "主机未订阅控制点通知时暂存响应，订阅后补发")
+    check("sendControlPointResponse" not in control_point_src
+          and "按规范不发送任何通知" in control_point_src,
+          "控制点只写无响应，收到挂起/恢复后不回送通知（符合 BLE HOGP 规范）")
+    check("pendingControlPointResponse" not in control_point_src,
+          "控制点不再暂存响应（已按规范移除回声与补发逻辑）")
     check("value == HIDControlPoint.suspend" in control_point_src,
           "挂起判定用官方口径的 0x00（曾误按 0x01/0x02 另一套口径实现）")
 

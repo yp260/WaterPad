@@ -5,10 +5,19 @@ struct SettingsView: View {
     @EnvironmentObject private var haptics: HapticEngineController
     @EnvironmentObject private var peripheral: HIDPeripheralManager
     @EnvironmentObject private var motion: MotionProvider
+    @EnvironmentObject private var bridge: BridgeTransport
     @EnvironmentObject private var log: LogStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var showingLog = false
+
+    private var bridgeConnected: Bool {
+        bridge.state == .connected
+    }
+
+    private var bridgeStateText: String {
+        bridge.state.text
+    }
 
     var body: some View {
         NavigationView {
@@ -25,6 +34,30 @@ struct SettingsView: View {
                     }
                     Button("重新构建服务并广播") {
                         peripheral.reconfigure()
+                    }
+                }
+
+                Section("传输模式") {
+                    Picker("模式", selection: $settings.transportModeID) {
+                        ForEach(SettingsStore.TransportMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode.rawValue)
+                        }
+                    }
+                    if settings.transportMode == .bridge {
+                        Text("硬件桥模式（推荐用于 Windows / 安卓）：iPhone 不直接对外广播，而是把输入经 WiFi 发给 ESP32-C3 小板，由小板扮演真正的 BLE 游戏手柄。这是目前唯一能在三端都被正常发现并接管的方案，因为 ESP32 可以在广播里设置 GAP Appearance，而 iOS 不行。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        row(title: "桥链路", value: bridgeStateText)
+                        Button(bridgeConnected ? "断开硬件桥" : "连接硬件桥") {
+                            if bridgeConnected { bridge.disconnect() } else { bridge.connect() }
+                        }
+                        Text("使用前请先在 iPhone 系统「无线局域网」里连上 ESP32 发出的 WP-Bridge 热点（开放网络，无需密码），再点上面的连接。烧录与配网步骤见仓库根目录 BRIDGE.md。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("本机蓝牙模式：iPhone 作为 BLE 外设直连主机。iPad 的鼠标类别已验证可配对；但受 iOS 限制，Windows 与多数安卓机的蓝牙设置无法列出本设备（不开放广播 Appearance），这种情况下请改用硬件桥模式。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
 

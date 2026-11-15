@@ -8,6 +8,7 @@ struct ContentView: View {
     @EnvironmentObject private var haptics: HapticEngineController
     @EnvironmentObject private var motion: MotionProvider
     @EnvironmentObject private var log: LogStore
+    @EnvironmentObject private var bridge: BridgeTransport
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var showingSettings = false
@@ -28,12 +29,22 @@ struct ContentView: View {
             motion.apply(enabled: settings.motionEnabled)
         }
         // 状态以 60 赫兹采样并生成输入报告；蓝牙层按设置中的频率发送。
+        // 硬件桥模式下改走 UDP 发往 ESP32，不再经本机 BLE 外设。
         .onReceive(Timer.publish(every: 1.0 / 60, on: .main, in: .common).autoconnect()) { _ in
-            peripheral.submit(
-                snapshot: pad.snapshot,
-                profile: settings.profile,
-                includeReportIDPrefix: settings.includeReportIDPrefix
-            )
+            if settings.transportMode == .bridge {
+                let bytes = GamepadReport.makeBytes(
+                    snapshot: pad.snapshot,
+                    profile: settings.profile,
+                    includeReportIDPrefix: false
+                )
+                bridge.sendInput(bytes)
+            } else {
+                peripheral.submit(
+                    snapshot: pad.snapshot,
+                    profile: settings.profile,
+                    includeReportIDPrefix: settings.includeReportIDPrefix
+                )
+            }
         }
         .onChange(of: settings.rebuildToken) { _ in
             peripheral.reconfigure()
@@ -66,6 +77,7 @@ struct ContentView: View {
                 .environmentObject(haptics)
                 .environmentObject(peripheral)
                 .environmentObject(motion)
+                .environmentObject(bridge)
         }
         .sheet(isPresented: $showingLog) {
             LogView().environmentObject(log)
@@ -95,16 +107,36 @@ struct ContentView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 2)
-            Button(peripheral.isAdvertising ? "停止广播" : "开始广播") {
-                if peripheral.isAdvertising {
-                    peripheral.stop()
-                } else {
-                    peripheral.start()
+            if settings.transportMode == .bridge {
+                Circle()
+                    .fill(bridge.state == .connected ? Color.green : Color.orange)
+                    .frame(width: 8, height: 8)
+                Text(bridge.state.text)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                Button(bridge.state == .connected ? "断开桥" : "连接硬件桥") {
+                    if bridge.state == .connected {
+                        bridge.disconnect()
+                    } else {
+                        bridge.connect()
+                    }
                 }
+                .font(.caption2)
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            } else {
+                Button(peripheral.isAdvertising ? "停止广播" : "开始广播") {
+                    if peripheral.isAdvertising {
+                        peripheral.stop()
+                    } else {
+                        peripheral.start()
+                    }
+                }
+                .font(.caption2)
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
             }
-            .font(.caption2)
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
             // 布局编辑入口常驻：编辑态下按钮文案变为「结束编辑」，
             // 离开编辑时 GamepadView 会自动把草稿提交并持久化。
             Button(settings.isEditingLayout ? "结束编辑" : "布局") {

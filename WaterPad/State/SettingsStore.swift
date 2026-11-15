@@ -20,6 +20,24 @@ final class SettingsStore: ObservableObject {
         static let hidCategory = "waterpad.hidCategory"
         static let compactHIDDescriptor = "waterpad.compactHIDDescriptor"
         static let layout = "waterpad.layout"
+        static let transportModeID = "waterpad.transportMode"
+    }
+
+    /// 传输模式：本机蓝牙（iPhone 直连主机）或硬件桥（iPhone -> ESP32-C3 -> 主机）。
+    /// 纯 iOS 蓝牙模式因系统限制无法在 Windows / 安卓被发现，硬件桥模式可三端通用。
+    enum TransportMode: String, CaseIterable, Identifiable {
+        case ble = "ble"
+        case bridge = "bridge"
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .ble: return "本机蓝牙"
+            case .bridge: return "硬件桥（ESP32）"
+            }
+        }
+        static func withID(_ id: String) -> TransportMode {
+            TransportMode(rawValue: id) ?? .ble
+        }
     }
 
     private let defaults = UserDefaults.standard
@@ -48,6 +66,9 @@ final class SettingsStore: ObservableObject {
     /// 部分主机的 HID 解析器对传感器集合不友好，精简后更容易被接管。
     /// 改动会改变 GATT 结构，必须重建服务。
     @Published var compactHIDDescriptor: Bool { didSet { defaults.set(compactHIDDescriptor, forKey: Key.compactHIDDescriptor); rebuildToken += 1 } }
+    /// 传输模式：本机蓝牙直连，或经 ESP32-C3 硬件桥转发。
+    /// 切换模式不改变 GATT 结构，不触发重建；由界面据此启停对应子系统。
+    @Published var transportModeID: String { didSet { defaults.set(transportModeID, forKey: Key.transportModeID) } }
 
     /// 手柄控件布局（位置与缩放），可编辑并持久化。
     @Published var layout: PadLayout = .default
@@ -77,7 +98,9 @@ final class SettingsStore: ObservableObject {
         appearanceID = stored.string(forKey: Key.appearanceID) ?? HIDAppearance.gamepad.rawValue
         advertiseHIDOnly = stored.object(forKey: Key.advertiseHIDOnly) as? Bool ?? false
         hidCategoryID = stored.string(forKey: Key.hidCategory) ?? HIDDeviceCategory.gamepad.rawValue
-        compactHIDDescriptor = stored.object(forKey: Key.compactHIDDescriptor) as? Bool ?? false
+        // 默认开启精简描述符：去掉传感器集合，给 iPad 等主机最大的连接成功率。
+        compactHIDDescriptor = stored.object(forKey: Key.compactHIDDescriptor) as? Bool ?? true
+        transportModeID = stored.string(forKey: Key.transportModeID) ?? TransportMode.ble.rawValue
 
         if let data = stored.data(forKey: Key.layout),
            let decoded = try? JSONDecoder().decode(PadLayout.self, from: data) {
@@ -103,4 +126,5 @@ final class SettingsStore: ObservableObject {
 
     var appearance: HIDAppearance { .withID(appearanceID) }
     var hidCategory: HIDDeviceCategory { .withID(hidCategoryID) }
+    var transportMode: TransportMode { .withID(transportModeID) }
 }

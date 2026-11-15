@@ -47,10 +47,6 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
     /// 已建立链路的主机。连接数按这个算，而不是按订阅数——
     /// 主机连上但还没订阅报告时，订阅数是零，界面会误报「没连上」。
     private var connectedCentrals: [CBCentral] = []
-    /// 订阅了 HID 控制点通知的主机，控制点响应只发给它。
-    private var controlPointCentrals: [CBCentral] = []
-    /// 主机还没订阅控制点通知时暂存的响应字节，等它订阅后补发。
-    private var pendingControlPointResponse: (central: CBCentral, byte: UInt8)?
 
     private let reportLock = NSLock()
     private var latestReport: Data?
@@ -100,8 +96,6 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             self.subscribedCentrals.removeAll()
             self.motionCentrals.removeAll()
             self.connectedCentrals.removeAll()
-            self.controlPointCentrals.removeAll()
-            self.pendingControlPointResponse = nil
             self.suspendedByHost = false
             self.reportLock.lock()
             self.latestReport = nil
@@ -202,8 +196,6 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
         subscribedCentrals.removeAll()
         motionCentrals.removeAll()
         connectedCentrals.removeAll()
-        controlPointCentrals.removeAll()
-        pendingControlPointResponse = nil
         suspendedByHost = false
         DispatchQueue.main.async {
             self.isAdvertising = false
@@ -488,20 +480,6 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
                 motionCentrals.append(central)
             }
             log.add("主机订阅运动报告（陀螺仪与加速度），当前已连接 \(connectedCentrals.count) 台")
-        } else if characteristic === set.hidControlPointCharacteristic {
-            if !controlPointCentrals.contains(where: { $0 === central }) {
-                controlPointCentrals.append(central)
-            }
-            log.add("主机订阅 HID 控制点通知，可以回送挂起响应")
-            // 主机是先写控制点、后订阅通知的，补发之前暂存的响应
-            if let pending = pendingControlPointResponse {
-                pendingControlPointResponse = nil
-                let sent = peripheral.updateValue(Data([pending.byte]),
-                                                 for: set.hidControlPointCharacteristic,
-                                                 onSubscribedCentrals: [central])
-                log.add("补发控制点响应 0x\(String(pending.byte, radix: 16))：\(sent ? "已发出" : "仍失败")")
-            }
-            return
         } else {
             return
         }
@@ -526,8 +504,6 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             }
         } else if let motion = set.motionReportCharacteristic, characteristic === motion {
             motionCentrals.removeAll { $0 === central }
-        } else if characteristic === set.hidControlPointCharacteristic {
-            controlPointCentrals.removeAll { $0 === central }
         } else {
             return
         }
@@ -673,26 +649,10 @@ final class HIDPeripheralManager: NSObject, ObservableObject, CBPeripheralManage
             suspendedByHost = false
             log.add("主机请求退出挂起（控制点 0x\(String(value, radix: 16))），恢复发送输入报告")
         }
-        sendControlPointResponse(peripheral: peripheral, central: central, byte: value)
+        // HID over GATT 控制点只写无响应，主机不期待回包，按规范不发送任何通知。
         let text = suspendRequested
-            ? "已收到挂起请求并回声 0x00"
-            : "已收到退出挂起请求并回声 0x\(String(value, radix: 16))"
+            ? "已收到挂起请求（控制点 0x00）"
+            : "已收到退出挂起请求（控制点 0x\(String(value, radix: 16))）"
         DispatchQueue.main.async { self.hostControlPointText = text }
-    }
-
-    private func sendControlPointResponse(peripheral: CBPeripheralManager,
-                                          central: CBCentral,
-                                          byte: UInt8) {
-        guard let set = serviceSet else { return }
-        let sent = peripheral.updateValue(Data([byte]),
-                                          for: set.hidControlPointCharacteristic,
-                                          onSubscribedCentrals: [central])
-        if sent {
-            log.add("控制点响应 0x\(String(byte, radix: 16)) 已用通知发出")
-        } else {
-            // 主机还没订阅控制点通知，先暂存，等它订阅后补发。
-            pendingControlPointResponse = (central, byte)
-            log.add("主机尚未订阅控制点通知，响应暂存，订阅后补发", level: .warn)
-        }
     }
 }
